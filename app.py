@@ -3,15 +3,15 @@ from dash import dcc, html
 import pandas as pd
 import plotly.express as px
 
-# Load scorecard data
+# === Load Scorecard Data ===
 scorecard_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment.csv"
 df_scorecard = pd.read_csv(scorecard_url)
 
-# Load line chart data
+# === Load Time Series Data ===
 timeseries_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment_by_date.csv"
 df_timeseries = pd.read_csv(timeseries_url)
 
-# === SCORECARD SETUP ===
+# === Create Scorecard ===
 if not df_scorecard.empty:
     subject = df_scorecard['Subject'].iloc[0]
     score = df_scorecard['NormalizedSentimentScore'].iloc[0]
@@ -31,8 +31,7 @@ if not df_scorecard.empty:
 else:
     scorecard = html.Div("No data available", style={"textAlign": "center", "fontSize": "24px", "color": "gray", "paddingTop": "100px"})
 
-# === LINE CHART SETUP ===
-df_timeseries.dropna(subset=['SentimentDate', 'NormalizedSentimentScore'], inplace=True)
+# === Create Line Chart ===
 df_timeseries['SentimentDate'] = pd.to_datetime(df_timeseries['SentimentDate'])
 df_timeseries.sort_values(by=['Subject', 'SentimentDate'], inplace=True)
 
@@ -63,7 +62,7 @@ line_chart = html.Div([
     dcc.Graph(figure=fig)
 ], className="card")
 
-# === DASH APP ===
+# === Final App Layout ===
 app = dash.Dash(__name__)
 app.layout = html.Div([
     scorecard,
@@ -72,4 +71,5 @@ app.layout = html.Div([
 
 if __name__ == '__main__':
     app.run_server(debug=True)
+
 
