@@ -11,6 +11,10 @@ df_scorecard = pd.read_csv(scorecard_url)
 timeseries_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment_by_date.csv"
 df_timeseries = pd.read_csv(timeseries_url)
 
+# === Load Traits Data ===
+traits_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/subject_trait_summary.csv"
+df_traits = pd.read_csv(traits_url)
+
 # === Create Scorecard ===
 if not df_scorecard.empty:
     subject = df_scorecard['Subject'].iloc[0]
@@ -62,6 +66,30 @@ line_chart = html.Div([
     dcc.Graph(figure=fig)
 ], className="card")
 
+# Handle empty case
+if df_traits.empty:
+    trait_block = html.Div("No trait data available.", style={"color": "gray", "textAlign": "center"})
+else:
+    subject = df_traits['Subject'].iloc[0]
+
+    # Split and sort traits
+    pos_traits = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
+    neg_traits = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
+
+    # Format lists
+    def make_list(traits, color):
+        return html.Ul([
+            html.Li(f"{i+1}. {trait}", style={"fontSize": "20px", "color": color}) for i, trait in enumerate(traits)
+        ], style={"margin": "0", "paddingLeft": "20px"})
+
+    trait_block = html.Div([
+        html.H1("Top Traits Summary", style={"textAlign": "center"}),
+        html.H2("People like it when I...", style={"color": "green", "fontWeight": "bold"}),
+        make_list(pos_traits, "lightgreen"),
+        html.H2("People don’t like it when I...", style={"color": "crimson", "marginTop": "40px", "fontWeight": "bold"}),
+        make_list(neg_traits, "lightcoral")
+    ], className="card")
+
 # === Final App Layout ===
 app = dash.Dash(__name__)
 app.layout = html.Div([
@@ -71,5 +99,12 @@ app.layout = html.Div([
 
 if __name__ == '__main__':
     app.run_server(debug=True)
+
+app.layout = html.Div([
+    scorecard,
+    line_chart,
+    trait_block
+], style={"backgroundColor": "#1e1e2f", "padding": "20px"})
+
 
 
