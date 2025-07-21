@@ -1,31 +1,21 @@
 import dash
-from dash import html
+from dash import dcc, html
 import pandas as pd
+import plotly.express as px
 
-# Load CSV from GitHub (replace with your actual raw GitHub link)
-csv_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment.csv"
-df = pd.read_csv(csv_url)
+# Load scorecard data
+scorecard_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment.csv"
+df_scorecard = pd.read_csv(scorecard_url)
 
-# Create Dash app
-app = dash.Dash(__name__)
+# Load line chart data
+timeseries_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment_by_date.csv"
+df_timeseries = pd.read_csv(timeseries_url)
 
-# Handle empty or valid dataset
-if df.empty:
-    app.layout = html.Div(
-        "No data available",
-        style={
-            "textAlign": "center",
-            "fontSize": "24px",
-            "color": "gray",
-            "paddingTop": "100px"
-        }
-    )
-else:
-    # Use first row of data
-    subject = df['Subject'].iloc[0]
-    score = df['NormalizedSentimentScore'].iloc[0]  # <-- Update if your column name is different
+# === SCORECARD SETUP ===
+if not df_scorecard.empty:
+    subject = df_scorecard['Subject'].iloc[0]
+    score = df_scorecard['NormalizedSentimentScore'].iloc[0]
 
-    # Choose color based on score
     if score < 400:
         color = 'crimson'
     elif score > 600:
@@ -33,17 +23,53 @@ else:
     else:
         color = 'orange'
 
-    # Apply layout using 'card' class styled in style.css
-    app.layout = html.Div(
-        html.Div([
-            html.H1(subject),
-            html.H2("Sentiment Score"),
-            html.H3(f"{score:,}", style={"color": color})
-        ], className="card")
-    )
+    scorecard = html.Div([
+        html.H1(subject),
+        html.H2("Sentiment Score"),
+        html.H3(f"{score:,}", style={"color": color})
+    ], className="card")
+else:
+    scorecard = html.Div("No data available", style={"textAlign": "center", "fontSize": "24px", "color": "gray", "paddingTop": "100px"})
 
-# Run locally (ignored by Render)
+# === LINE CHART SETUP ===
+df_timeseries.dropna(subset=['SentimentDate', 'NormalizedSentimentScore'], inplace=True)
+df_timeseries['SentimentDate'] = pd.to_datetime(df_timeseries['SentimentDate'])
+df_timeseries.sort_values(by=['Subject', 'SentimentDate'], inplace=True)
+
+fig = px.line(
+    df_timeseries,
+    x='SentimentDate',
+    y='NormalizedSentimentScore',
+    color='Subject',
+    markers=True,
+    title='Sentiment Over Time',
+    labels={
+        'SentimentDate': 'Date',
+        'NormalizedSentimentScore': 'Sentiment Score'
+    }
+)
+
+fig.update_layout(
+    paper_bgcolor='#1e1e2f',
+    plot_bgcolor='#1e1e2f',
+    font_color='white',
+    title_font_size=20,
+    xaxis=dict(showgrid=True, gridcolor='gray'),
+    yaxis=dict(showgrid=True, gridcolor='gray', range=[0, 1000])
+)
+
+line_chart = html.Div([
+    html.H1("Average Normalized Sentiment Over Time", style={"textAlign": "center"}),
+    dcc.Graph(figure=fig)
+], className="card")
+
+# === DASH APP ===
+app = dash.Dash(__name__)
+app.layout = html.Div([
+    scorecard,
+    line_chart
+], style={"backgroundColor": "#1e1e2f", "padding": "20px"})
+
 if __name__ == '__main__':
     app.run_server(debug=True)
-
 
