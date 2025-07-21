@@ -2,13 +2,10 @@ import dash
 from dash import html
 import pandas as pd
 
-# Sample DataFrame (you can replace with actual data loading logic later)
-df = pd.DataFrame({
-    'Subject': ['Ted Cruz'],
-    'NormalizedSentimentScore': [475]
-})
+# Load CSV directly from GitHub raw link
+df = pd.read_csv("https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment.csv")
 
-# Determine layout based on data
+# Build the layout
 if df.empty:
     content = html.Div(
         "No data available",
@@ -21,7 +18,7 @@ if df.empty:
     )
 else:
     subject = df['Subject'].iloc[0]
-    score = df['NormalizedSentimentScore'].iloc[0]
+    score = df['NormalizedSentimentScore'].iloc[0]  # Or the actual column name
 
     if score < 400:
         color = 'crimson'
@@ -52,4 +49,5 @@ app = dash.Dash(__name__)
 app.layout = html.Div(content)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run_server(debug=True)
+
