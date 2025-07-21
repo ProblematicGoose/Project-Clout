@@ -3,7 +3,7 @@ from dash import html
 import pandas as pd
 
 # Load CSV from GitHub (replace with your actual raw GitHub link)
-csv_url = "https://raw.githubusercontent.com/YOUR-USERNAME/YOUR-REPO/main/normalized_sentiment.csv"
+csv_url = "https://raw.githubusercontent.com/ProblematicGoose/Project-Clout/refs/heads/main/normalized_sentiment.csv"
 df = pd.read_csv(csv_url)
 
 # Create Dash app
