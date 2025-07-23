@@ -111,6 +111,7 @@ traits = html.Div([
     make_list(neg_traits, "lightcoral")
 ])
 
+
     return scorecard, linechart, traits
 
 
