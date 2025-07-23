@@ -4,9 +4,10 @@ import pandas as pd
 import requests
 import plotly.express as px
 
+# 🔁 Replace with your live ngrok URL
 API_BASE = "https://82a49d5841a9.ngrok-free.app"
 
-# Pre-load subjects for dropdown (you could optimize this if needed)
+# Preload subjects
 all_traits = requests.get(f"{API_BASE}/api/traits").json()
 subjects = sorted(list({row["Subject"] for row in all_traits}))
 
@@ -14,7 +15,6 @@ app = dash.Dash(__name__)
 app.title = "Sentiment Dashboard"
 
 app.layout = html.Div([
-    # Subject selector
     html.Div([
         html.Label("Select a Subject:", style={"color": "white", "fontSize": "18px", "marginRight": "10px"}),
         dcc.Dropdown(
@@ -32,7 +32,6 @@ app.layout = html.Div([
 ], style={"backgroundColor": "#1e1e2f", "padding": "20px"})
 
 
-# === CALLBACK ===
 @app.callback(
     Output('scorecard-output', 'children'),
     Output('linechart-output', 'children'),
@@ -86,7 +85,7 @@ def update_visuals(subject):
         dcc.Graph(figure=fig)
     ])
 
-    # === Traits Block ===
+    # === Traits ===
     traits_resp = requests.get(f"{API_BASE}/api/traits")
     df_traits = pd.DataFrame(traits_resp.json())
     df_traits = df_traits[df_traits['Subject'] == subject]
@@ -97,23 +96,23 @@ def update_visuals(subject):
     def make_list(traits, color):
         return html.Div([
             html.Div(
-             f"{i+1}. {trait}",
+                f"{i+1}. {trait}",
                 style={"fontSize": "20px", "color": color, "textAlign": "left", "marginBottom": "6px"}
             )
             for i, trait in enumerate(traits)
         ])
 
-traits = html.Div([
-    html.H1("Top Traits Summary", style={"textAlign": "center"}),
-    html.H2("People like it when I...", style={"color": "green", "fontWeight": "bold", "textAlign": "left"}),
-    make_list(pos_traits, "lightgreen"),
-    html.H2("People don’t like it when I...", style={"color": "crimson", "marginTop": "40px", "fontWeight": "bold", "textAlign": "left"}),
-    make_list(neg_traits, "lightcoral")
-])
-
+    traits = html.Div([
+        html.H1("Top Traits Summary", style={"textAlign": "center"}),
+        html.H2("People like it when I...", style={"color": "green", "fontWeight": "bold", "textAlign": "left"}),
+        make_list(pos_traits, "lightgreen"),
+        html.H2("People don’t like it when I...", style={"color": "crimson", "marginTop": "40px", "fontWeight": "bold", "textAlign": "left"}),
+        make_list(neg_traits, "lightcoral")
+    ])
 
     return scorecard, linechart, traits
 
 
 if __name__ == '__main__':
     app.run_server(debug=True)
+
