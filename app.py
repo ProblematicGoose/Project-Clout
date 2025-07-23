@@ -5,7 +5,7 @@ import requests
 import plotly.express as px
 
 # === API Base URL ===
-API_BASE = "https://177215c72998.ngrok-free.app"
+API_BASE = "https://82a49d5841a9.ngrok-free.app"
 
 # === Get Scorecard Data ===
 scorecard_resp = requests.get(f"{API_BASE}/api/scorecard")
