@@ -94,18 +94,23 @@ def update_visuals(subject):
     pos_traits = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
     neg_traits = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
 
-    def make_list(traits, color):
-        return html.Ul([
-            html.Li(f"{i+1}. {trait}", style={"fontSize": "20px", "color": color}) for i, trait in enumerate(traits)
-        ], style={"margin": "0", "paddingLeft": "20px"})
-
-    traits = html.Div([
-        html.H1("Top Traits Summary", style={"textAlign": "center"}),
-        html.H2("People like it when I...", style={"color": "green", "fontWeight": "bold"}),
-        make_list(pos_traits, "lightgreen"),
-        html.H2("People don’t like it when I...", style={"color": "crimson", "marginTop": "40px", "fontWeight": "bold"}),
-        make_list(neg_traits, "lightcoral")
+ def make_list(traits, color):
+    return html.Div([
+        html.Div(
+            f"{i+1}. {trait}",
+            style={"fontSize": "20px", "color": color, "textAlign": "left", "marginBottom": "6px"}
+        )
+        for i, trait in enumerate(traits)
     ])
+
+traits = html.Div([
+    html.H1("Top Traits Summary", style={"textAlign": "center"}),
+    html.H2("People like it when I...", style={"color": "green", "fontWeight": "bold", "textAlign": "left"}),
+    make_list(pos_traits, "lightgreen"),
+    html.H2("People don’t like it when I...", style={"color": "crimson", "marginTop": "40px", "fontWeight": "bold", "textAlign": "left"}),
+    make_list(neg_traits, "lightcoral")
+])
+
 
     return scorecard, linechart, traits
 
