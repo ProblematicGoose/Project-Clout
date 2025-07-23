@@ -5,7 +5,7 @@ import requests
 import plotly.express as px
 
 # 🔁 Replace with your live ngrok URL
-API_BASE = "https://a74779d44bcb.ngrok-free.app"
+API_BASE = "https://e3d84414008c.ngrok-free.app"
 
 # Preload subjects
 all_traits = requests.get(f"{API_BASE}/api/traits").json()
