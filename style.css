@@ -1,0 +1,33 @@
+body {
+  background-color: #1e1e2f;
+  color: #ffffff;
+  font-family: 'Segoe UI', sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+.card {
+    margin: 40px auto;
+    padding: 30px;
+    max-width: 1000px;
+    border-radius: 10px;
+    background-color: #f9f9f9;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+.card h1 {
+  font-size: 48px;
+  font-weight: bold;
+  margin: 0;
+}
+
+.card h2 {
+  font-size: 24px;
+  color: #cccccc;
+  margin: 10px 0;
+}
+
+.card h3 {
+  font-size: 72px;
+  margin: 0;
+}

@@ -29,11 +29,15 @@ app.layout = html.Div([
             value=next(iter(subjects)),
             style={'width': '50%', 'margin': '0 auto'}
         )
-    ]),
+    ], style={'marginBottom': '40px'}),
 
-    html.Div(id='scorecard-div', style={'textAlign': 'center', 'marginTop': '50px'}),
-    dcc.Graph(id='timeseries-graph', style={'marginTop': '50px'}),
-    html.Div(id='traits-div', style={'marginTop': '50px', 'padding': '20px'})
+    html.Div(id='scorecard-div', className='card'),
+
+    html.Div([
+        dcc.Graph(id='timeseries-graph')
+    ], className='card'),
+
+    html.Div(id='traits-div', className='card')
 ])
 
 
