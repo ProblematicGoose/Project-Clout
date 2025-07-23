@@ -1,73 +1,96 @@
 import dash
-from dash import html, dcc
+from dash import dcc, html, Input, Output
 import pandas as pd
 import requests
 import plotly.express as px
 
-# === API Base URL ===
 API_BASE = "https://82a49d5841a9.ngrok-free.app"
 
-# === Get Scorecard Data ===
-scorecard_resp = requests.get(f"{API_BASE}/api/scorecard")
-df_scorecard = pd.DataFrame(scorecard_resp.json())
+# Pre-load subjects for dropdown (you could optimize this if needed)
+all_traits = requests.get(f"{API_BASE}/api/traits").json()
+subjects = sorted(list({row["Subject"] for row in all_traits}))
 
-# === Get Time Series Data ===
-timeseries_resp = requests.get(f"{API_BASE}/api/timeseries")
-df_timeseries = pd.DataFrame(timeseries_resp.json())
+app = dash.Dash(__name__)
+app.title = "Sentiment Dashboard"
 
-# === Get Trait Data ===
-traits_resp = requests.get(f"{API_BASE}/api/traits")
-df_traits = pd.DataFrame(traits_resp.json())
+app.layout = html.Div([
+    # Subject selector
+    html.Div([
+        html.Label("Select a Subject:", style={"color": "white", "fontSize": "18px", "marginRight": "10px"}),
+        dcc.Dropdown(
+            id='subject-dropdown',
+            options=[{"label": s, "value": s} for s in subjects],
+            value=subjects[0],
+            style={"width": "300px", "color": "#000"}
+        )
+    ], style={"padding": "20px"}),
 
-# === Scorecard Component ===
-if not df_scorecard.empty:
-    subject = df_scorecard['Subject'].iloc[0]
-    score = df_scorecard['NormalizedSentimentScore'].iloc[0]
+    html.Div(id='scorecard-output', className="card"),
+    html.Div(id='linechart-output', className="card"),
+    html.Div(id='traits-output', className="card")
 
-    color = 'orange'
-    if score < 400:
-        color = 'crimson'
-    elif score > 600:
-        color = 'green'
+], style={"backgroundColor": "#1e1e2f", "padding": "20px"})
 
-    scorecard = html.Div([
-        html.H1(subject),
-        html.H2("Sentiment Score"),
-        html.H3(f"{score:,}", style={"color": color})
-    ], className="card")
-else:
-    scorecard = html.Div("No scorecard data available", className="card")
 
-# === Time Series Line Chart ===
-df_timeseries['SentimentDate'] = pd.to_datetime(df_timeseries['SentimentDate'])
-df_timeseries.sort_values(by=['Subject', 'SentimentDate'], inplace=True)
-
-fig = px.line(
-    df_timeseries,
-    x='SentimentDate',
-    y='NormalizedSentimentScore',
-    color='Subject',
-    markers=True,
-    title='Sentiment Over Time'
+# === CALLBACK ===
+@app.callback(
+    Output('scorecard-output', 'children'),
+    Output('linechart-output', 'children'),
+    Output('traits-output', 'children'),
+    Input('subject-dropdown', 'value')
 )
+def update_visuals(subject):
+    # === Scorecard ===
+    score_resp = requests.get(f"{API_BASE}/api/scorecard")
+    df_score = pd.DataFrame(score_resp.json())
+    df_subject = df_score[df_score['Subject'] == subject]
 
-fig.update_layout(
-    paper_bgcolor='#1e1e2f',
-    plot_bgcolor='#1e1e2f',
-    font_color='white',
-    title_font_size=20,
-    xaxis=dict(showgrid=True, gridcolor='gray'),
-    yaxis=dict(showgrid=True, gridcolor='gray', range=[0, 1000])
-)
+    if not df_subject.empty:
+        score = df_subject['NormalizedSentimentScore'].iloc[0]
+        color = 'orange'
+        if score < 400:
+            color = 'crimson'
+        elif score > 600:
+            color = 'green'
+        scorecard = html.Div([
+            html.H1(subject),
+            html.H2("Sentiment Score"),
+            html.H3(f"{score:,}", style={"color": color})
+        ])
+    else:
+        scorecard = html.Div("No data for selected subject")
 
-line_chart = html.Div([
-    html.H1("Average Normalized Sentiment Over Time", style={"textAlign": "center"}),
-    dcc.Graph(figure=fig)
-], className="card")
+    # === Line Chart ===
+    ts_resp = requests.get(f"{API_BASE}/api/timeseries")
+    df_ts = pd.DataFrame(ts_resp.json())
+    df_ts['SentimentDate'] = pd.to_datetime(df_ts['SentimentDate'])
+    df_ts = df_ts[df_ts['Subject'] == subject].sort_values('SentimentDate')
 
-# === Trait Summary Component ===
-if not df_traits.empty:
-    subject = df_traits['Subject'].iloc[0]
+    fig = px.line(
+        df_ts,
+        x='SentimentDate',
+        y='NormalizedSentimentScore',
+        title='Sentiment Over Time',
+        markers=True
+    )
+    fig.update_layout(
+        paper_bgcolor='#1e1e2f',
+        plot_bgcolor='#1e1e2f',
+        font_color='white',
+        title_font_size=20,
+        xaxis=dict(showgrid=True, gridcolor='gray'),
+        yaxis=dict(showgrid=True, gridcolor='gray', range=[0, 1000])
+    )
+    linechart = html.Div([
+        html.H1("Average Normalized Sentiment Over Time", style={"textAlign": "center"}),
+        dcc.Graph(figure=fig)
+    ])
+
+    # === Traits Block ===
+    traits_resp = requests.get(f"{API_BASE}/api/traits")
+    df_traits = pd.DataFrame(traits_resp.json())
+    df_traits = df_traits[df_traits['Subject'] == subject]
+
     pos_traits = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
     neg_traits = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
 
@@ -76,23 +99,16 @@ if not df_traits.empty:
             html.Li(f"{i+1}. {trait}", style={"fontSize": "20px", "color": color}) for i, trait in enumerate(traits)
         ], style={"margin": "0", "paddingLeft": "20px"})
 
-    trait_block = html.Div([
+    traits = html.Div([
         html.H1("Top Traits Summary", style={"textAlign": "center"}),
         html.H2("People like it when I...", style={"color": "green", "fontWeight": "bold"}),
         make_list(pos_traits, "lightgreen"),
         html.H2("People don’t like it when I...", style={"color": "crimson", "marginTop": "40px", "fontWeight": "bold"}),
         make_list(neg_traits, "lightcoral")
-    ], className="card")
-else:
-    trait_block = html.Div("No trait data available.", className="card")
+    ])
 
-# === Final Layout ===
-app = dash.Dash(__name__)
-app.layout = html.Div([
-    scorecard,
-    line_chart,
-    trait_block
-], style={"backgroundColor": "#1e1e2f", "padding": "20px"})
+    return scorecard, linechart, traits
+
 
 if __name__ == '__main__':
     app.run_server(debug=True)
