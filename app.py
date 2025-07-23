@@ -95,13 +95,13 @@ def update_visuals(subject):
     neg_traits = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
 
     def make_list(traits, color):
-    return html.Div([
-        html.Div(
-            f"{i+1}. {trait}",
-            style={"fontSize": "20px", "color": color, "textAlign": "left", "marginBottom": "6px"}
-        )
-        for i, trait in enumerate(traits)
-    ])
+        return html.Div([
+            html.Div(
+             f"{i+1}. {trait}",
+                style={"fontSize": "20px", "color": color, "textAlign": "left", "marginBottom": "6px"}
+            )
+            for i, trait in enumerate(traits)
+        ])
 
 traits = html.Div([
     html.H1("Top Traits Summary", style={"textAlign": "center"}),
