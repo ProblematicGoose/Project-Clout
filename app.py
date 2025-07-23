@@ -45,7 +45,7 @@ def update_visuals(subject):
     df_subject = df_score[df_score['Subject'] == subject]
 
     if not df_subject.empty:
-        score = df_subject['NormalizedSentimentScore'].iloc[0]
+        score = int(df_scorecard[df_scorecard['Subject'] == selected_subject]['NormalizedSentimentScore'].iloc[0])
         color = 'orange'
         if score < 400:
             color = 'crimson'
