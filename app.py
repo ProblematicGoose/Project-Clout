@@ -17,7 +17,8 @@ server = app.server
 # Load subjects dynamically from API
 with urllib.request.urlopen(SCORECARD_URL) as url:
     subjects_data = json.load(url)
-subjects = sorted({entry["Subject"].strip() for entry in subjects_data})
+subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
+
 
 # Layout
 app.layout = html.Div([
