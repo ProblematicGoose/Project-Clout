@@ -6,9 +6,10 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://7a91cf885037.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://7a91cf885037.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://7a91cf885037.ngrok-free.app/api/traits"
+SCORECARD_URL = "https://93b6f3593661.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://93b6f3593661.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://93b6f3593661.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://93b6f3593661.ngrok-free.app/api/bill-sentiment"  # New endpoint for bill sentiment
 
 # Initialize Dash app
 app = dash.Dash(__name__)
@@ -18,7 +19,6 @@ server = app.server
 with urllib.request.urlopen(SCORECARD_URL) as url:
     subjects_data = json.load(url)
 subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
-
 
 # Layout
 app.layout = html.Div([
@@ -38,15 +38,17 @@ app.layout = html.Div([
         dcc.Graph(id='timeseries-graph')
     ], className='card'),
 
-    html.Div(id='traits-div', className='card')
-])
+    html.Div(id='traits-div', className='card'),
 
+    html.Div(id='bill-sentiment-table', className='card', style={'marginTop': '40px'})
+])
 
 # Callbacks
 @app.callback(
     Output('scorecard-div', 'children'),
     Output('timeseries-graph', 'figure'),
     Output('traits-div', 'children'),
+    Output('bill-sentiment-table', 'children'),
     Input('subject-dropdown', 'value')
 )
 def update_dashboard(selected_subject):
@@ -57,7 +59,7 @@ def update_dashboard(selected_subject):
 
     score_row = df_scorecard[df_scorecard['Subject'] == selected_subject]
     if score_row.empty:
-        score = 5000  # fallback neutral score
+        score = 5000
     else:
         score = int(score_row['NormalizedSentimentScore'].iloc[0])
 
@@ -114,10 +116,32 @@ def update_dashboard(selected_subject):
         html.Ul([html.Li(trait, style={'textAlign': 'left'}) for trait in negative], style={'listStyleType': 'none'})
     ])
 
-    return scorecard_display, timeseries_fig, trait_display
+    # Fetch bill sentiment data
+    with urllib.request.urlopen(BILL_SENTIMENT_URL) as url:
+        bill_data = json.load(url)
+    df_bills = pd.DataFrame(bill_data)
+
+    bill_table = html.Div([
+        html.H2("Public Sentiment Toward National Bills", style={'textAlign': 'center'}),
+        html.Table([
+            html.Thead([
+                html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])
+            ]),
+            html.Tbody([
+                html.Tr([
+                    html.Td(row['BillName']),
+                    html.Td(round(row['AverageSentimentScore'], 2)),
+                    html.Td(row['SentimentLabel'])
+                ]) for _, row in df_bills.iterrows()
+            ])
+        ], style={'width': '80%', 'margin': '0 auto', 'borderCollapse': 'collapse', 'textAlign': 'left'})
+    ])
+
+    return scorecard_display, timeseries_fig, trait_display, bill_table
 
 
 if __name__ == '__main__':
     app.run_server(debug=False)
+
 
 
