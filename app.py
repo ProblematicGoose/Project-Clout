@@ -6,10 +6,10 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://e7ade0bd9dd8.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://e7ade0bd9dd8.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://e7ade0bd9dd8.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://e7ade0bd9dd8.ngrok-free.app/api/bill-sentiment"  # New endpoint for bill sentiment
+SCORECARD_URL = "https://122d6feb453e.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://122d6feb453e.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://122d6feb453e.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://122d6feb453e.ngrok-free.app/api/bill-sentiment"  # New endpoint for bill sentiment
 
 # Initialize Dash app
 app = dash.Dash(__name__)
@@ -130,7 +130,7 @@ def update_dashboard(selected_subject):
             html.Tbody([
                 html.Tr([
                     html.Td(row['BillName']),
-                    html.Td(round(row['AverageSentimentScore'], 2)),
+                    html.Td(round(row['AverageSentimentScore'], 2), style={'paddingRight': '30px'}),
                     html.Td(row['SentimentLabel'])
                 ]) for _, row in df_bills.iterrows()
             ])
