@@ -6,19 +6,21 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://05cebb0f0c2d.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://05cebb0f0c2d.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://05cebb0f0c2d.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://05cebb0f0c2d.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://05cebb0f0c2d.ngrok-free.app/api/top-issues"
+SCORECARD_URL = "https://e56459ad9ec3.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://e56459ad9ec3.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://e56459ad9ec3.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://e56459ad9ec3.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://e56459ad9ec3.ngrok-free.app/api/top-issues"
 
 app = dash.Dash(__name__)
 server = app.server
 
+# Load subjects dynamically from API
 with urllib.request.urlopen(SCORECARD_URL) as url:
     subjects_data = json.load(url)
 subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
 
+# Layout
 app.layout = html.Div([
     html.Div([
         html.H1("Sentiment Dashboard", style={'textAlign': 'center'}),
@@ -46,6 +48,7 @@ app.layout = html.Div([
     Input('subject-dropdown', 'value')
 )
 def update_dashboard(selected_subject):
+    # Fetch scorecard data
     with urllib.request.urlopen(SCORECARD_URL) as url:
         scorecard_data = json.load(url)
     df_scorecard = pd.DataFrame(scorecard_data)
@@ -59,6 +62,7 @@ def update_dashboard(selected_subject):
         html.Div(f"{score:,}", style={'fontSize': '80px', 'color': color})
     ])
 
+    # Fetch time series data
     with urllib.request.urlopen(TIMESERIES_URL) as url:
         timeseries_data = json.load(url)
     df_timeseries = pd.DataFrame(timeseries_data)
@@ -81,6 +85,7 @@ def update_dashboard(selected_subject):
         template='plotly_white'
     )
 
+    # Fetch traits data
     with urllib.request.urlopen(TRAITS_URL) as url:
         traits_data = json.load(url)
     df_traits = pd.DataFrame(traits_data)
@@ -95,6 +100,7 @@ def update_dashboard(selected_subject):
         html.Ul([html.Li(trait, style={'textAlign': 'left'}) for trait in negative], style={'listStyleType': 'none'})
     ])
 
+    # Fetch bill sentiment data
     with urllib.request.urlopen(BILL_SENTIMENT_URL) as url:
         bill_data = json.load(url)
     df_bills = pd.DataFrame(bill_data)
@@ -112,7 +118,7 @@ def update_dashboard(selected_subject):
         ], style={'width': '80%', 'margin': '0 auto', 'borderCollapse': 'collapse', 'textAlign': 'left'})
     ])
 
-    # === TOP ISSUES BY IDEOLOGY ===
+    # Fetch top issues
     try:
         with urllib.request.urlopen(TOP_ISSUES_URL) as url:
             issues_data = json.load(url)
@@ -126,7 +132,8 @@ def update_dashboard(selected_subject):
                 html.Div([
                     html.H3("Conservative Topics", style={'color': 'crimson'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in conservative_issues])
-                ], style={'width': '45%', 'display': 'inline-block', 'verticalAlign': 'top'}),
+                ], style={'width': '45%', 'display': 'inline-block'}),
+
                 html.Div([
                     html.H3("Liberal Topics", style={'color': 'blue'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in liberal_issues])
