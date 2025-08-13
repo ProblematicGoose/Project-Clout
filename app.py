@@ -6,11 +6,11 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://4c2f4bd11503.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://4c2f4bd11503.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://4c2f4bd11503.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://4c2f4bd11503.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://4c2f4bd11503.ngrok-free.app/api/top-issues"
+SCORECARD_URL = "https://6e90a52769cf.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://6e90a52769cf.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://6e90a52769cf.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://6e90a52769cf.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://6e90a52769cf.ngrok-free.app/api/top-issues"
 
 app = dash.Dash(__name__)
 server = app.server
@@ -124,11 +124,11 @@ def update_dashboard(selected_subject):
             html.H2(f"Top Issues for the Week of {week}", style={'textAlign': 'center'}),
             html.Div([
                 html.Div([
-                    html.H3("Conservative Topics", style={'color': 'crimson'}),
+                    html.H3("Conservative Topics", style={'color': 'crimson', 'fontSize': '12pt'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in conservative_issues])
                 ], style={'width': '45%', 'display': 'inline-block', 'verticalAlign': 'top'}),
                 html.Div([
-                    html.H3("Liberal Topics", style={'color': 'blue'}),
+                    html.H3("Liberal Topics", style={'color': 'blue', 'fontSize': '12pt'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in liberal_issues])
                 ], style={'width': '45%', 'display': 'inline-block', 'marginLeft': '5%'})
             ])
