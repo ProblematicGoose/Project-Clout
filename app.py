@@ -1,267 +1,179 @@
-# app.py
-import os
-import requests
+import dash
+from dash import dcc, html, Input, Output
 import pandas as pd
 import plotly.graph_objs as go
-import dash
-from dash import dcc, html, Input, Output, State
+import urllib.request
+import json
 
-# ============ CONFIG ============
-# Point this to your Flask API. Example:
-#   set BASE_API=https://<your-ngrok>.ngrok-free.app
-# or leave unset to use localhost:5057
-BASE_API = os.getenv("https://b686a735fbe9.ngrok-free.app", "http://localhost:5057")
+# URLs for live data
+SCORECARD_URL = "https://8249996e81e5.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://8249996e81e5.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://8249996e81e5.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://8249996e81e5.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://8249996e81e5.ngrok-free.app/api/top-issues"
 
-SCORECARD_URL     = f"{BASE_API}/api/scorecard"
-TIMESERIES_URL    = f"{BASE_API}/api/timeseries"
-TRAITS_URL        = f"{BASE_API}/api/traits"
-BILL_SENTIMENT_URL= f"{BASE_API}/api/bill-sentiment"
-TOP_ISSUES_URL    = f"{BASE_API}/api/top-issues"
-
-REQ_TIMEOUT = 12  # seconds
-
-# ============ APP INIT ============
-app = dash.Dash(__name__, suppress_callback_exceptions=True)
+# Initialize Dash app
+app = dash.Dash(__name__)
 server = app.server
 
-def get_json(url, default=None):
-    try:
-        r = requests.get(url, timeout=REQ_TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"[ERROR] GET {url}: {e}")
-        return default if default is not None else {}
+# Load subjects dynamically from API
+with urllib.request.urlopen(SCORECARD_URL) as url:
+    subjects_data = json.load(url)
+subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
 
-# Load subjects for dropdown (tolerant of API hiccups)
-scorecard_boot = get_json(SCORECARD_URL, default=[])
-subjects = sorted({(row.get("Subject") or "").strip()
-                   for row in scorecard_boot if row.get("Subject")}) or ["(no data)"]
-default_subject = subjects[0]
-
-# ============ LAYOUT ============
+# Layout
 app.layout = html.Div([
     html.Div([
-        html.H1("Sentiment Dashboard", style={'textAlign': 'center', 'marginBottom': '8px'}),
-        html.Div([
-            dcc.Dropdown(
-                id='subject-dropdown',
-                options=[{'label': s, 'value': s} for s in subjects],
-                value=default_subject,
-                style={'width': '60%'}
-            ),
-            dcc.Interval(id="refresh-interval", interval=60*1000, n_intervals=0)  # optional 60s refresh
-        ], style={'display': 'flex', 'gap': '16px', 'justifyContent': 'center', 'alignItems': 'center'})
-    ], style={'marginBottom': '24px'}),
+        html.H1("Sentiment Dashboard", style={'textAlign': 'center'}),
+        dcc.Dropdown(
+            id='subject-dropdown',
+            options=[{'label': subj, 'value': subj} for subj in subjects],
+            value=next(iter(subjects)),
+            style={'width': '50%', 'margin': '0 auto'}
+        )
+    ], style={'marginBottom': '40px'}),
 
-    # Scorecard
-    html.Div(id='scorecard-div', className='card',
-             style={'padding': '16px', 'marginBottom': '24px', 'textAlign': 'center',
-                    'border': '1px solid #eee', 'borderRadius': '12px'}),
+    html.Div(id='scorecard-div', className='card'),
 
-    # Time series
     html.Div([
         dcc.Graph(id='timeseries-graph')
-    ], className='card', style={'padding': '8px', 'marginBottom': '24px',
-                                'border': '1px solid #eee', 'borderRadius': '12px'}),
+    ], className='card'),
 
-    # Traits
-    html.Div(id='traits-div', className='card',
-             style={'padding': '16px', 'marginBottom': '24px',
-                    'border': '1px solid #eee', 'borderRadius': '12px'}),
+    html.Div(id='traits-div', className='card'),
 
-    # Top issues this week (new)
+    html.Div(id='bill-sentiment-table', className='card', style={'marginTop': '40px'}),
+
     html.Div([
-        html.H2("Top Issues This Week", style={'textAlign': 'center', 'marginBottom': '16px'}),
-        html.Div([
-            html.Div([
-                html.H3("Conservative", style={'textAlign': 'center', 'marginBottom': '8px'}),
-                dcc.Graph(id='top-issues-conservative')
-            ], style={'flex': 1, 'padding': '8px', 'minWidth': '300px'}),
-            html.Div([
-                html.H3("Liberal", style={'textAlign': 'center', 'marginBottom': '8px'}),
-                dcc.Graph(id='top-issues-liberal')
-            ], style={'flex': 1, 'padding': '8px', 'minWidth': '300px'}),
-        ], style={'display': 'flex', 'gap': '16px', 'flexWrap': 'wrap'}),
-        html.Div(id='top-issues-week-label', style={'textAlign': 'center', 'color': '#666', 'marginTop': '-4px'})
-    ], className='card', style={'padding': '16px', 'marginBottom': '24px',
-                                'border': '1px solid #eee', 'borderRadius': '12px'}),
-
-    # Bill sentiment table
-    html.Div(id='bill-sentiment-table', className='card',
-             style={'padding': '16px', 'marginBottom': '24px',
-                    'border': '1px solid #eee', 'borderRadius': '12px'})
+        html.H2("Top 5 Issues by Ideology", style={'textAlign': 'center'}),
+        dcc.Graph(id='ideology-issues-graph'),
+        html.Div(id='ideology-week-label', style={'textAlign': 'center', 'color': 'gray'})
+    ], className='card', style={'marginTop': '40px'})
 ])
 
-
-# ============ CALLBACK ============
+# Callback for main dashboard
 @app.callback(
     Output('scorecard-div', 'children'),
     Output('timeseries-graph', 'figure'),
     Output('traits-div', 'children'),
     Output('bill-sentiment-table', 'children'),
-    Output('top-issues-conservative', 'figure'),
-    Output('top-issues-liberal', 'figure'),
-    Output('top-issues-week-label', 'children'),
-    Input('subject-dropdown', 'value'),
-    Input('refresh-interval', 'n_intervals')
+    Input('subject-dropdown', 'value')
 )
-def update_dashboard(selected_subject, _tick):
-    # -------- SCORECARD --------
-    scorecard_data = get_json(SCORECARD_URL, default=[])
-    df_scorecard = pd.DataFrame(scorecard_data) if scorecard_data else pd.DataFrame()
-    score = 5000
-    if not df_scorecard.empty and 'Subject' in df_scorecard.columns:
-        row = df_scorecard[df_scorecard['Subject'] == selected_subject]
-        if not row.empty:
-            try:
-                score = int(row['NormalizedSentimentScore'].iloc[0])
-            except Exception:
-                pass
-
-    if score < 4000:
-        score_color = 'crimson'
-    elif score > 6000:
-        score_color = 'green'
-    else:
-        score_color = 'orange'
-
+def update_dashboard(selected_subject):
+    # Scorecard
+    with urllib.request.urlopen(SCORECARD_URL) as url:
+        scorecard_data = json.load(url)
+    df_scorecard = pd.DataFrame(scorecard_data)
+    score_row = df_scorecard[df_scorecard['Subject'] == selected_subject]
+    score = int(score_row['NormalizedSentimentScore'].iloc[0]) if not score_row.empty else 5000
+    color = 'crimson' if score < 4000 else 'green' if score > 6000 else 'orange'
     scorecard_display = html.Div([
-        html.H1(selected_subject, style={'fontSize': '46px', 'fontWeight': 'bold', 'margin': 0}),
-        html.Div("Sentiment Score", style={'fontSize': '22px', 'color': 'gray'}),
-        html.Div(f"{score:,}", style={'fontSize': '64px', 'color': score_color, 'fontWeight': 'bold'})
+        html.H1(selected_subject, style={'fontSize': '50px', 'fontWeight': 'bold'}),
+        html.Div("Sentiment Score", style={'fontSize': '30px', 'color': 'gray'}),
+        html.Div(f"{score:,}", style={'fontSize': '80px', 'color': color})
     ])
 
-    # -------- TIME SERIES --------
-    timeseries_data = get_json(TIMESERIES_URL, default=[])
-    df_ts = pd.DataFrame(timeseries_data) if timeseries_data else pd.DataFrame(columns=['SentimentDate','Subject','NormalizedSentimentScore'])
-    if not df_ts.empty and 'SentimentDate' in df_ts.columns:
-        df_ts['SentimentDate'] = pd.to_datetime(df_ts['SentimentDate'], errors='coerce')
-        df_ts = df_ts.dropna(subset=['SentimentDate'])
-    df_sel = df_ts[df_ts['Subject'] == selected_subject] if not df_ts.empty else pd.DataFrame(columns=df_ts.columns)
-
-    ts_fig = go.Figure()
-    ts_fig.add_trace(go.Scatter(
-        x=df_sel['SentimentDate'],
-        y=df_sel['NormalizedSentimentScore'],
+    # Time series
+    with urllib.request.urlopen(TIMESERIES_URL) as url:
+        timeseries_data = json.load(url)
+    df_timeseries = pd.DataFrame(timeseries_data)
+    df_timeseries['SentimentDate'] = pd.to_datetime(df_timeseries['SentimentDate'])
+    df_filtered = df_timeseries[df_timeseries['Subject'] == selected_subject]
+    timeseries_fig = go.Figure()
+    timeseries_fig.add_trace(go.Scatter(
+        x=df_filtered['SentimentDate'],
+        y=df_filtered['NormalizedSentimentScore'],
         mode='lines+markers',
-        name=selected_subject
+        name=selected_subject,
+        line=dict(color='royalblue')
     ))
-    ts_fig.update_layout(
+    timeseries_fig.update_layout(
         title="Sentiment Over Time",
         xaxis_title="Date",
         yaxis_title="Normalized Sentiment Score (0–10,000)",
         yaxis=dict(range=[0, 10000]),
-        template='plotly_white',
-        margin=dict(l=40, r=20, t=50, b=40)
+        template='plotly_white'
     )
 
-    # -------- TRAITS --------
-    traits_data = get_json(TRAITS_URL, default=[])
-    df_traits = pd.DataFrame(traits_data) if traits_data else pd.DataFrame(columns=['Subject','TraitType','TraitRank','TraitDescription'])
-    df_traits = df_traits[df_traits['Subject'] == selected_subject] if not df_traits.empty else df_traits
-
-    pos = (df_traits[df_traits['TraitType'] == 'Positive']
-           .sort_values('TraitRank')['TraitDescription'].tolist()) if not df_traits.empty else []
-    neg = (df_traits[df_traits['TraitType'] == 'Negative']
-           .sort_values('TraitRank')['TraitDescription'].tolist()) if not df_traits.empty else []
-
-    traits_section = html.Div([
+    # Traits
+    with urllib.request.urlopen(TRAITS_URL) as url:
+        traits_data = json.load(url)
+    df_traits = pd.DataFrame(traits_data)
+    df_traits = df_traits[df_traits['Subject'] == selected_subject]
+    positive = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
+    negative = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
+    trait_display = html.Div([
         html.H2("People like it when I...", style={'color': 'green'}),
-        html.Ul([html.Li(t, style={'textAlign': 'left'}) for t in pos], style={'listStyleType': 'none', 'paddingLeft': 0}),
-        html.H2("People don't like it when I...", style={'color': 'crimson', 'marginTop': '20px'}),
-        html.Ul([html.Li(t, style={'textAlign': 'left'}) for t in neg], style={'listStyleType': 'none', 'paddingLeft': 0})
+        html.Ul([html.Li(trait) for trait in positive], style={'listStyleType': 'none'}),
+        html.H2("People don't like it when I...", style={'color': 'crimson', 'marginTop': '30px'}),
+        html.Ul([html.Li(trait) for trait in negative], style={'listStyleType': 'none'})
     ])
 
-    # -------- BILL SENTIMENT TABLE --------
-    bill_data = get_json(BILL_SENTIMENT_URL, default=[])
-    df_bills = pd.DataFrame(bill_data) if bill_data else pd.DataFrame(columns=['BillName','AverageSentimentScore','SentimentLabel'])
-
-    bill_rows = []
-    for _, r in df_bills.iterrows():
-        bill_rows.append(html.Tr([
-            html.Td(r.get('BillName', '')),
-            html.Td(f"{float(r.get('AverageSentimentScore', 0)):.2f}", style={'paddingRight': '24px'}),
-            html.Td(r.get('SentimentLabel', ''))
-        ]))
-
+    # Bill sentiment
+    with urllib.request.urlopen(BILL_SENTIMENT_URL) as url:
+        bill_data = json.load(url)
+    df_bills = pd.DataFrame(bill_data)
     bill_table = html.Div([
-        html.H2("Public Sentiment Toward National Bills", style={'textAlign': 'center', 'marginBottom': '12px'}),
+        html.H2("Public Sentiment Toward National Bills", style={'textAlign': 'center'}),
         html.Table([
-            html.Thead(html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])),
-            html.Tbody(bill_rows or [html.Tr([html.Td("No data"), html.Td(""), html.Td("")])])
-        ], style={'width': '90%', 'margin': '0 auto', 'borderCollapse': 'collapse'})
+            html.Thead([
+                html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])
+            ]),
+            html.Tbody([
+                html.Tr([
+                    html.Td(row['BillName']),
+                    html.Td(round(row['AverageSentimentScore'], 2), style={'paddingRight': '30px'}),
+                    html.Td(row['SentimentLabel'])
+                ]) for _, row in df_bills.iterrows()
+            ])
+        ], style={'width': '80%', 'margin': '0 auto', 'borderCollapse': 'collapse'})
     ])
 
-    # -------- TOP ISSUES (NEW) --------
-    top_issues_json = get_json(TOP_ISSUES_URL, default={"weekStartDate": None, "data": {"Conservative": [], "Liberal": []}})
-    week_label = top_issues_json.get("weekStartDate") or None
-    data = top_issues_json.get("data") or {}
-    cons_list = data.get("Conservative", [])
-    lib_list  = data.get("Liberal", [])
+    return scorecard_display, timeseries_fig, trait_display, bill_table
 
-    # Convert to DataFrames (ranked)
-    df_cons = pd.DataFrame(cons_list)
-    df_lib  = pd.DataFrame(lib_list)
-    if not df_cons.empty:
-        df_cons = df_cons.sort_values("rank")
-    if not df_lib.empty:
-        df_lib = df_lib.sort_values("rank")
+# Callback for top issues by ideology
+@app.callback(
+    Output('ideology-issues-graph', 'figure'),
+    Output('ideology-week-label', 'children'),
+    Input('subject-dropdown', 'value')  # Dummy input to trigger load on page
+)
+def update_ideology_graph(_):
+    with urllib.request.urlopen(TOP_ISSUES_URL) as url:
+        issues_data = json.load(url)
 
-    # Horizontal bar charts with rank ascending (1 at top)
-    cons_fig = go.Figure()
-    if not df_cons.empty:
-        cons_fig.add_trace(go.Bar(
-            x=[1]*len(df_cons),  # dummy width to show equal bars if you prefer rank-based no-weight
-            y=df_cons['topic'],
-            orientation='h',
-            text=[f"#{r}" for r in df_cons['rank']],
-            textposition='outside',
-            hovertemplate="Rank %{text}<br>%{y}<extra></extra>"
-        ))
-    cons_fig.update_layout(
-        title=f"Conservative — Top 5 Issues" + (f" (week of {week_label})" if week_label else ""),
-        xaxis=dict(visible=False),
-        yaxis={'autorange': 'reversed'},
-        template='plotly_white',
-        margin=dict(l=140, r=30, t=50, b=30),
-        height=360
+    week_label = f"Issues from week starting {issues_data['WeekStartDate']}"
+
+    liberal_issues = issues_data.get('Liberal', [])
+    conservative_issues = issues_data.get('Conservative', [])
+
+    liberal_topics = [issue['Topic'] for issue in liberal_issues]
+    conservative_topics = [issue['Topic'] for issue in conservative_issues]
+    liberal_ranks = [6 - issue['Rank'] for issue in liberal_issues]
+    conservative_ranks = [6 - issue['Rank'] for issue in conservative_issues]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=liberal_ranks,
+        y=liberal_topics,
+        name='Liberal',
+        orientation='h'
+    ))
+    fig.add_trace(go.Bar(
+        x=conservative_ranks,
+        y=conservative_topics,
+        name='Conservative',
+        orientation='h'
+    ))
+
+    fig.update_layout(
+        barmode='group',
+        title="Top 5 Topics by Ideology",
+        xaxis_title="Importance (Higher = More Important)",
+        yaxis_title="Topic",
+        template='plotly_white'
     )
 
-    lib_fig = go.Figure()
-    if not df_lib.empty:
-        lib_fig.add_trace(go.Bar(
-            x=[1]*len(df_lib),
-            y=df_lib['topic'],
-            orientation='h',
-            text=[f"#{r}" for r in df_lib['rank']],
-            textposition='outside',
-            hovertemplate="Rank %{text}<br>%{y}<extra></extra>"
-        ))
-    lib_fig.update_layout(
-        title=f"Liberal — Top 5 Issues" + (f" (week of {week_label})" if week_label else ""),
-        xaxis=dict(visible=False),
-        yaxis={'autorange': 'reversed'},
-        template='plotly_white',
-        margin=dict(l=140, r=30, t=50, b=30),
-        height=360
-    )
+    return fig, week_label
 
-    week_caption = f"Showing latest week: {week_label}" if week_label else "No week available."
-
-    return (
-        scorecard_display,
-        ts_fig,
-        traits_section,
-        bill_table,
-        cons_fig,
-        lib_fig,
-        week_caption
-    )
-
-
-# ============ RUN ============
 if __name__ == '__main__':
-    # For Render or other hosts, you might bind to 0.0.0.0 and set a PORT env var.
-    app.run_server(host='0.0.0.0', port=int(os.getenv("PORT", "8060")), debug=False)
+    app.run_server(debug=True)
 
