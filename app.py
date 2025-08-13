@@ -6,21 +6,19 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://4abfd61b7c2a.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://4abfd61b7c2a.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://4abfd61b7c2a.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://4abfd61b7c2a.ngrok-free.app/api/bill-sentiment"  # New endpoint for bill sentiment
+SCORECARD_URL = "https://05cebb0f0c2d.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://05cebb0f0c2d.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://05cebb0f0c2d.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://05cebb0f0c2d.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://05cebb0f0c2d.ngrok-free.app/api/top-issues"
 
-# Initialize Dash app
 app = dash.Dash(__name__)
 server = app.server
 
-# Load subjects dynamically from API
 with urllib.request.urlopen(SCORECARD_URL) as url:
     subjects_data = json.load(url)
 subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
 
-# Layout
 app.layout = html.Div([
     html.Div([
         html.H1("Sentiment Dashboard", style={'textAlign': 'center'}),
@@ -33,43 +31,27 @@ app.layout = html.Div([
     ], style={'marginBottom': '40px'}),
 
     html.Div(id='scorecard-div', className='card'),
-
-    html.Div([
-        dcc.Graph(id='timeseries-graph')
-    ], className='card'),
-
+    html.Div([dcc.Graph(id='timeseries-graph')], className='card'),
     html.Div(id='traits-div', className='card'),
-
-    html.Div(id='bill-sentiment-table', className='card', style={'marginTop': '40px'})
+    html.Div(id='bill-sentiment-table', className='card', style={'marginTop': '40px'}),
+    html.Div(id='top-issues-div', className='card', style={'marginTop': '40px'})
 ])
 
-# Callbacks
 @app.callback(
     Output('scorecard-div', 'children'),
     Output('timeseries-graph', 'figure'),
     Output('traits-div', 'children'),
     Output('bill-sentiment-table', 'children'),
+    Output('top-issues-div', 'children'),
     Input('subject-dropdown', 'value')
 )
 def update_dashboard(selected_subject):
-    # Fetch scorecard data
     with urllib.request.urlopen(SCORECARD_URL) as url:
         scorecard_data = json.load(url)
     df_scorecard = pd.DataFrame(scorecard_data)
-
     score_row = df_scorecard[df_scorecard['Subject'] == selected_subject]
-    if score_row.empty:
-        score = 5000
-    else:
-        score = int(score_row['NormalizedSentimentScore'].iloc[0])
-
-    # Determine color
-    if score < 4000:
-        color = 'crimson'
-    elif score > 6000:
-        color = 'green'
-    else:
-        color = 'orange'
+    score = int(score_row['NormalizedSentimentScore'].iloc[0]) if not score_row.empty else 5000
+    color = 'green' if score > 6000 else 'crimson' if score < 4000 else 'orange'
 
     scorecard_display = html.Div([
         html.H1(selected_subject, style={'fontSize': '50px', 'fontWeight': 'bold'}),
@@ -77,7 +59,6 @@ def update_dashboard(selected_subject):
         html.Div(f"{score:,}", style={'fontSize': '80px', 'color': color})
     ])
 
-    # Fetch time series data
     with urllib.request.urlopen(TIMESERIES_URL) as url:
         timeseries_data = json.load(url)
     df_timeseries = pd.DataFrame(timeseries_data)
@@ -100,12 +81,10 @@ def update_dashboard(selected_subject):
         template='plotly_white'
     )
 
-    # Fetch traits data
     with urllib.request.urlopen(TRAITS_URL) as url:
         traits_data = json.load(url)
     df_traits = pd.DataFrame(traits_data)
     df_traits = df_traits[df_traits['Subject'] == selected_subject]
-
     positive = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
     negative = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
 
@@ -116,17 +95,13 @@ def update_dashboard(selected_subject):
         html.Ul([html.Li(trait, style={'textAlign': 'left'}) for trait in negative], style={'listStyleType': 'none'})
     ])
 
-    # Fetch bill sentiment data
     with urllib.request.urlopen(BILL_SENTIMENT_URL) as url:
         bill_data = json.load(url)
     df_bills = pd.DataFrame(bill_data)
-
     bill_table = html.Div([
         html.H2("Public Sentiment Toward National Bills", style={'textAlign': 'center'}),
         html.Table([
-            html.Thead([
-                html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])
-            ]),
+            html.Thead([html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])]),
             html.Tbody([
                 html.Tr([
                     html.Td(row['BillName']),
@@ -137,8 +112,31 @@ def update_dashboard(selected_subject):
         ], style={'width': '80%', 'margin': '0 auto', 'borderCollapse': 'collapse', 'textAlign': 'left'})
     ])
 
-    return scorecard_display, timeseries_fig, trait_display, bill_table
+    # === TOP ISSUES BY IDEOLOGY ===
+    try:
+        with urllib.request.urlopen(TOP_ISSUES_URL) as url:
+            issues_data = json.load(url)
+        week = issues_data['WeekStartDate']
+        conservative_issues = issues_data['Conservative']
+        liberal_issues = issues_data['Liberal']
 
+        issues_display = html.Div([
+            html.H2(f"Top Issues for the Week of {week}", style={'textAlign': 'center'}),
+            html.Div([
+                html.Div([
+                    html.H3("Conservative Topics", style={'color': 'crimson'}),
+                    html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in conservative_issues])
+                ], style={'width': '45%', 'display': 'inline-block', 'verticalAlign': 'top'}),
+                html.Div([
+                    html.H3("Liberal Topics", style={'color': 'blue'}),
+                    html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in liberal_issues])
+                ], style={'width': '45%', 'display': 'inline-block', 'marginLeft': '5%'})
+            ])
+        ])
+    except Exception as e:
+        issues_display = html.Div([html.H3("Failed to load top issues")])
+
+    return scorecard_display, timeseries_fig, trait_display, bill_table, issues_display
 
 if __name__ == '__main__':
     app.run_server(debug=False)
