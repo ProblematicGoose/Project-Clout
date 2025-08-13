@@ -6,11 +6,11 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://8249996e81e5.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://8249996e81e5.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://8249996e81e5.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://8249996e81e5.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://8249996e81e5.ngrok-free.app/api/top-issues"
+SCORECARD_URL = "https://dd7694e9231a.ngrok-free.app/api/top-issues/api/scorecard"
+TIMESERIES_URL = "https://dd7694e9231a.ngrok-free.app/api/top-issues/api/timeseries"
+TRAITS_URL = "https://dd7694e9231a.ngrok-free.app/api/top-issues/api/traits"
+BILL_SENTIMENT_URL = "https://dd7694e9231a.ngrok-free.app/api/top-issues/api/bill-sentiment"
+TOP_ISSUES_URL = "https://dd7694e9231a.ngrok-free.app/api/top-issues"
 
 # Initialize Dash app
 app = dash.Dash(__name__)
