@@ -6,12 +6,12 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://29560ddef004.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://29560ddef004.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://29560ddef004.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://29560ddef004.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://29560ddef004.ngrok-free.app/api/top-issues"
-COMMON_GROUND_URL = "https://29560ddef004.ngrok-free.app/api/common-ground-issues"
+SCORECARD_URL = "https://63a757ff1e8e.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://63a757ff1e8e.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://63a757ff1e8e.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://63a757ff1e8e.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://63a757ff1e8e.ngrok-free.app/api/top-issues"
+COMMON_GROUND_URL = "https://63a757ff1e8e.ngrok-free.app/api/common-ground-issues"
 
 app = dash.Dash(__name__)
 server = app.server
@@ -147,7 +147,7 @@ def update_dashboard(selected_subject):
         df_common = df_common.sort_values('IssueRank')
 
         common_issues_display = html.Div([
-            html.H2("What This Politician Could Do to Win Moderates", style={'textAlign': 'center'}),
+            html.H2("Issues to focus on to win over moderates", style={'textAlign': 'center'}),
             html.Ul([
                 html.Li([
                     html.Span(f"{row['IssueRank']}. ", style={'fontWeight': 'bold'}),
