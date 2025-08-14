@@ -143,7 +143,9 @@ def update_dashboard(selected_subject):
         with urllib.request.urlopen(COMMON_GROUND_URL) as url:
             issues_data = json.load(url)
         df_common = pd.DataFrame(issues_data)
-        df_common = df_common[df_common['Subject'].str.lower() == selected_subject.lower()]
+        df_common['Subject'] = df_common['Subject'].fillna("").str.strip().str.lower()
+        selected_subject_clean = selected_subject.strip().lower()
+        df_common = df_common[df_common['Subject'] == selected_subject_clean]
         df_common = df_common.sort_values('IssueRank')
 
         common_issues_display = html.Div([
