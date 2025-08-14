@@ -6,12 +6,12 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/top-issues"
-COMMON_GROUND_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/common-ground-issues"
+SCORECARD_URL = "https://63a757ff1e8e.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://63a757ff1e8e.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://63a757ff1e8e.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://63a757ff1e8e.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://63a757ff1e8e.ngrok-free.app/api/top-issues"
+COMMON_GROUND_URL = "https://63a757ff1e8e.ngrok-free.app/api/common-ground-issues"
 
 app = dash.Dash(__name__)
 server = app.server
@@ -49,6 +49,8 @@ app.layout = html.Div([
     Input('subject-dropdown', 'value')
 )
 def update_dashboard(selected_subject):
+    print("Selected subject:", selected_subject)
+
     with urllib.request.urlopen(SCORECARD_URL) as url:
         scorecard_data = json.load(url)
     df_scorecard = pd.DataFrame(scorecard_data)
@@ -142,22 +144,29 @@ def update_dashboard(selected_subject):
     try:
         with urllib.request.urlopen(COMMON_GROUND_URL) as url:
             issues_data = json.load(url)
+            print("Sample data from common ground issues API:", issues_data[:3])
+
         df_common = pd.DataFrame(issues_data)
         df_common['Subject'] = df_common['Subject'].fillna("").str.strip().str.lower()
         selected_subject_clean = selected_subject.strip().lower()
         df_common = df_common[df_common['Subject'] == selected_subject_clean]
         df_common = df_common.sort_values('IssueRank')
 
-        common_issues_display = html.Div([
-            html.H2("Issues to focus on to win over moderates", style={'textAlign': 'center'}),
-            html.Ul([
-                html.Li([
-                    html.Span(f"{row['IssueRank']}. ", style={'fontWeight': 'bold'}),
-                    html.Span(f"{row['Issue']}: ", style={'fontWeight': 'bold'}),
-                    html.Span(row['Explanation'])
-                ]) for _, row in df_common.iterrows()
+        if df_common.empty:
+            common_issues_display = html.Div([
+                html.H3("No common ground issues found for this subject.", style={'textAlign': 'center', 'color': 'gray'})
             ])
-        ])
+        else:
+            common_issues_display = html.Div([
+                html.H2("Issues to focus on to win over moderates", style={'textAlign': 'center'}),
+                html.Ul([
+                    html.Li([
+                        html.Span(f"{row['IssueRank']}. ", style={'fontWeight': 'bold'}),
+                        html.Span(f"{row['Issue']}: ", style={'fontWeight': 'bold'}),
+                        html.Span(row['Explanation'])
+                    ]) for _, row in df_common.iterrows()
+                ])
+            ])
     except Exception as e:
         common_issues_display = html.Div([html.H3("Failed to load common ground issues")])
 
