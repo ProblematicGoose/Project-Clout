@@ -6,19 +6,23 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://63a757ff1e8e.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://63a757ff1e8e.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://63a757ff1e8e.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://63a757ff1e8e.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://63a757ff1e8e.ngrok-free.app/api/top-issues"
-COMMON_GROUND_URL = "https://63a757ff1e8e.ngrok-free.app/api/common-ground-issues"
+SCORECARD_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/top-issues"
+COMMON_GROUND_URL = "https://7a4c2efc8dcb.ngrok-free.app/api/common-ground-issues"
 
 app = dash.Dash(__name__)
 server = app.server
 
-with urllib.request.urlopen(SCORECARD_URL) as url:
-    subjects_data = json.load(url)
-subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
+try:
+    with urllib.request.urlopen(SCORECARD_URL, timeout=5) as url:
+        subjects_data = json.load(url)
+    subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
+except Exception as e:
+    print("Failed to load initial subjects:", e)
+    subjects = []
 
 app.layout = html.Div([
     html.Div([
@@ -26,7 +30,7 @@ app.layout = html.Div([
         dcc.Dropdown(
             id='subject-dropdown',
             options=[{'label': subj, 'value': subj} for subj in subjects],
-            value=next(iter(subjects)),
+            value=next(iter(subjects), None),
             style={'width': '50%', 'margin': '0 auto'}
         )
     ], style={'marginBottom': '40px'}),
@@ -51,24 +55,32 @@ app.layout = html.Div([
 def update_dashboard(selected_subject):
     print("Selected subject:", selected_subject)
 
-    with urllib.request.urlopen(SCORECARD_URL) as url:
-        scorecard_data = json.load(url)
-    df_scorecard = pd.DataFrame(scorecard_data)
-    score_row = df_scorecard[df_scorecard['Subject'] == selected_subject]
-    score = int(score_row['NormalizedSentimentScore'].iloc[0]) if not score_row.empty else 5000
-    color = 'green' if score > 6000 else 'crimson' if score < 4000 else 'orange'
+    try:
+        with urllib.request.urlopen(SCORECARD_URL, timeout=5) as url:
+            scorecard_data = json.load(url)
+        df_scorecard = pd.DataFrame(scorecard_data)
+        score_row = df_scorecard[df_scorecard['Subject'] == selected_subject]
+        score = int(score_row['NormalizedSentimentScore'].iloc[0]) if not score_row.empty else 5000
+    except Exception as e:
+        print("Failed to load scorecard data:", e)
+        score = 5000
 
+    color = 'green' if score > 6000 else 'crimson' if score < 4000 else 'orange'
     scorecard_display = html.Div([
         html.H1(selected_subject, style={'fontSize': '50px', 'fontWeight': 'bold'}),
         html.Div("Sentiment Score", style={'fontSize': '30px', 'color': 'gray'}),
         html.Div(f"{score:,}", style={'fontSize': '80px', 'color': color})
     ])
 
-    with urllib.request.urlopen(TIMESERIES_URL) as url:
-        timeseries_data = json.load(url)
-    df_timeseries = pd.DataFrame(timeseries_data)
-    df_timeseries['SentimentDate'] = pd.to_datetime(df_timeseries['SentimentDate'])
-    df_filtered = df_timeseries[df_timeseries['Subject'] == selected_subject]
+    try:
+        with urllib.request.urlopen(TIMESERIES_URL, timeout=5) as url:
+            timeseries_data = json.load(url)
+        df_timeseries = pd.DataFrame(timeseries_data)
+        df_timeseries['SentimentDate'] = pd.to_datetime(df_timeseries['SentimentDate'])
+        df_filtered = df_timeseries[df_timeseries['Subject'] == selected_subject]
+    except Exception as e:
+        print("Failed to load time series data:", e)
+        df_filtered = pd.DataFrame(columns=['SentimentDate', 'NormalizedSentimentScore'])
 
     timeseries_fig = go.Figure()
     timeseries_fig.add_trace(go.Scatter(
@@ -86,12 +98,16 @@ def update_dashboard(selected_subject):
         template='plotly_white'
     )
 
-    with urllib.request.urlopen(TRAITS_URL) as url:
-        traits_data = json.load(url)
-    df_traits = pd.DataFrame(traits_data)
-    df_traits = df_traits[df_traits['Subject'] == selected_subject]
-    positive = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
-    negative = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
+    try:
+        with urllib.request.urlopen(TRAITS_URL, timeout=5) as url:
+            traits_data = json.load(url)
+        df_traits = pd.DataFrame(traits_data)
+        df_traits = df_traits[df_traits['Subject'] == selected_subject]
+        positive = df_traits[df_traits['TraitType'] == 'Positive'].sort_values('TraitRank')['TraitDescription'].tolist()
+        negative = df_traits[df_traits['TraitType'] == 'Negative'].sort_values('TraitRank')['TraitDescription'].tolist()
+    except Exception as e:
+        print("Failed to load traits:", e)
+        positive, negative = [], []
 
     trait_display = html.Div([
         html.H2("People like it when I...", style={'color': 'green'}),
@@ -100,9 +116,14 @@ def update_dashboard(selected_subject):
         html.Ul([html.Li(trait, style={'textAlign': 'left'}) for trait in negative], style={'listStyleType': 'none'})
     ])
 
-    with urllib.request.urlopen(BILL_SENTIMENT_URL) as url:
-        bill_data = json.load(url)
-    df_bills = pd.DataFrame(bill_data)
+    try:
+        with urllib.request.urlopen(BILL_SENTIMENT_URL, timeout=5) as url:
+            bill_data = json.load(url)
+        df_bills = pd.DataFrame(bill_data)
+    except Exception as e:
+        print("Failed to load bill sentiment data:", e)
+        df_bills = pd.DataFrame(columns=['BillName', 'AverageSentimentScore', 'SentimentLabel'])
+
     bill_table = html.Div([
         html.H2("Public Sentiment Toward National Bills", style={'textAlign': 'center'}),
         html.Table([
@@ -118,7 +139,7 @@ def update_dashboard(selected_subject):
     ])
 
     try:
-        with urllib.request.urlopen(TOP_ISSUES_URL) as url:
+        with urllib.request.urlopen(TOP_ISSUES_URL, timeout=5) as url:
             issues_data = json.load(url)
         week = issues_data['WeekStartDate']
         conservative_issues = issues_data['Conservative']
@@ -138,14 +159,13 @@ def update_dashboard(selected_subject):
             ])
         ])
     except Exception as e:
+        print("Failed to load top issues:", e)
         issues_display = html.Div([html.H3("Failed to load top issues")])
 
-    # === COMMON GROUND ISSUES ===
     try:
-        with urllib.request.urlopen(COMMON_GROUND_URL) as url:
+        with urllib.request.urlopen(COMMON_GROUND_URL, timeout=5) as url:
             issues_data = json.load(url)
             print("Sample data from common ground issues API:", issues_data[:3])
-
         df_common = pd.DataFrame(issues_data)
         df_common['Subject'] = df_common['Subject'].fillna("").str.strip().str.lower()
         selected_subject_clean = selected_subject.strip().lower()
@@ -168,11 +188,12 @@ def update_dashboard(selected_subject):
                 ])
             ])
     except Exception as e:
+        print("Failed to load common ground issues:", e)
         common_issues_display = html.Div([html.H3("Failed to load common ground issues")])
 
     return scorecard_display, timeseries_fig, trait_display, bill_table, issues_display, common_issues_display
 
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    app.run(debug=False)
 
 
