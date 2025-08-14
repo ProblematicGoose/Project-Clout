@@ -6,11 +6,12 @@ import urllib.request
 import json
 
 # URLs for live data
-SCORECARD_URL = "https://6e90a52769cf.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://6e90a52769cf.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://6e90a52769cf.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://6e90a52769cf.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://6e90a52769cf.ngrok-free.app/api/top-issues"
+SCORECARD_URL = "https://29560ddef004.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://29560ddef004.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://29560ddef004.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://29560ddef004.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://29560ddef004.ngrok-free.app/api/top-issues"
+COMMON_GROUND_URL = "https://29560ddef004.ngrok-free.app/api/common-ground-issues"
 
 app = dash.Dash(__name__)
 server = app.server
@@ -34,7 +35,8 @@ app.layout = html.Div([
     html.Div([dcc.Graph(id='timeseries-graph')], className='card'),
     html.Div(id='traits-div', className='card'),
     html.Div(id='bill-sentiment-table', className='card', style={'marginTop': '40px'}),
-    html.Div(id='top-issues-div', className='card', style={'marginTop': '40px'})
+    html.Div(id='top-issues-div', className='card', style={'marginTop': '40px'}),
+    html.Div(id='common-ground-div', className='card', style={'marginTop': '40px'})
 ])
 
 @app.callback(
@@ -43,6 +45,7 @@ app.layout = html.Div([
     Output('traits-div', 'children'),
     Output('bill-sentiment-table', 'children'),
     Output('top-issues-div', 'children'),
+    Output('common-ground-div', 'children'),
     Input('subject-dropdown', 'value')
 )
 def update_dashboard(selected_subject):
@@ -112,7 +115,6 @@ def update_dashboard(selected_subject):
         ], style={'width': '80%', 'margin': '0 auto', 'borderCollapse': 'collapse', 'textAlign': 'left'})
     ])
 
-    # === TOP ISSUES BY IDEOLOGY ===
     try:
         with urllib.request.urlopen(TOP_ISSUES_URL) as url:
             issues_data = json.load(url)
@@ -136,7 +138,28 @@ def update_dashboard(selected_subject):
     except Exception as e:
         issues_display = html.Div([html.H3("Failed to load top issues")])
 
-    return scorecard_display, timeseries_fig, trait_display, bill_table, issues_display
+    # === COMMON GROUND ISSUES ===
+    try:
+        with urllib.request.urlopen(COMMON_GROUND_URL) as url:
+            issues_data = json.load(url)
+        df_common = pd.DataFrame(issues_data)
+        df_common = df_common[df_common['Subject'].str.lower() == selected_subject.lower()]
+        df_common = df_common.sort_values('IssueRank')
+
+        common_issues_display = html.Div([
+            html.H2("What This Politician Could Do to Win Moderates", style={'textAlign': 'center'}),
+            html.Ul([
+                html.Li([
+                    html.Span(f"{row['IssueRank']}. ", style={'fontWeight': 'bold'}),
+                    html.Span(f"{row['Issue']}: ", style={'fontWeight': 'bold'}),
+                    html.Span(row['Explanation'])
+                ]) for _, row in df_common.iterrows()
+            ])
+        ])
+    except Exception as e:
+        common_issues_display = html.Div([html.H3("Failed to load common ground issues")])
+
+    return scorecard_display, timeseries_fig, trait_display, bill_table, issues_display, common_issues_display
 
 if __name__ == '__main__':
     app.run_server(debug=False)
