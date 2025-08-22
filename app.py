@@ -23,8 +23,11 @@ server = app.server
 try:
     with urllib.request.urlopen(SCORECARD_URL, timeout=5) as url:
         subjects_data = json.load(url)
-    subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
+    print("✅ Loaded subjects from API:", subjects_data)
+    subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"]})
 except Exception as e:
+    print("⚠️ Failed to load subjects from API, using fallback list.", e)
+    subjects = ["Ted Cruz", "Elizabeth Warren", "Bernie Sanders"]
     print("Failed to load initial subjects:", e)
     subjects = []
 
