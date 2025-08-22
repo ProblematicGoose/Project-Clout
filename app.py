@@ -211,11 +211,11 @@ def update_dashboard(selected_subject):
                 html.Div([
                     html.H3("Conservative Topics", style={'color': 'crimson'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in conservative_issues])
-                ], style={'width': '45%', 'display': 'inline-block'}),
+                ], style={'width': '20%', 'display': 'inline-block'}),
                 html.Div([
                     html.H3("Liberal Topics", style={'color': 'blue'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in liberal_issues])
-                ], style={'width': '45%', 'display': 'inline-block', 'marginLeft': '5%'})
+                ], style={'width': '20%', 'display': 'inline-block', 'marginLeft': '5%'})
             ])
         ])
     except:
