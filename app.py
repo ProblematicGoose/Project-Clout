@@ -7,14 +7,14 @@ import json
 import datetime
 
 # URLs for live data
-SCORECARD_URL = "https://810d8473570f.ngrok-free.app/api/scorecard"
-TIMESERIES_URL = "https://810d8473570f.ngrok-free.app/api/timeseries"
-TRAITS_URL = "https://810d8473570f.ngrok-free.app/api/traits"
-BILL_SENTIMENT_URL = "https://810d8473570f.ngrok-free.app/api/bill-sentiment"
-TOP_ISSUES_URL = "https://810d8473570f.ngrok-free.app/api/top-issues"
-COMMON_GROUND_URL = "https://810d8473570f.ngrok-free.app/api/common-ground-issues"
-PHOTOS_URL = "https://810d8473570f.ngrok-free.app/api/subject-photos"
-MENTION_COUNTS_URL = "https://810d8473570f.ngrok-free.app/api/subject-mention-counts"
+SCORECARD_URL = "https://acb2a8b24770.ngrok-free.app/api/scorecard"
+TIMESERIES_URL = "https://acb2a8b24770.ngrok-free.app/api/timeseries"
+TRAITS_URL = "https://acb2a8b24770.ngrok-free.app/api/traits"
+BILL_SENTIMENT_URL = "https://acb2a8b24770.ngrok-free.app/api/bill-sentiment"
+TOP_ISSUES_URL = "https://acb2a8b24770.ngrok-free.app/api/top-issues"
+COMMON_GROUND_URL = "https://acb2a8b24770.ngrok-free.app/api/common-ground-issues"
+PHOTOS_URL = "https://acb2a8b24770.ngrok-free.app/api/subject-photos"
+MENTION_COUNTS_URL = "https://acb2a8b24770.ngrok-free.app/api/subject-mention-counts"
 
 app = dash.Dash(__name__)
 server = app.server
