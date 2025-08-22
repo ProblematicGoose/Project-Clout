@@ -209,13 +209,13 @@ def update_dashboard(selected_subject):
             html.H2(f"Top Issues for the Week of {week}", style={'textAlign': 'center'}),
             html.Div([
                 html.Div([
-                    html.H3("Conservative Topics", style={'color': 'crimson'}),
+                    html.H3("Conservative Topics", style={'color': 'crimson', 'fontSize': '12pt'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in conservative_issues])
-                ], style={'width': '20%', 'display': 'inline-block'}),
+                ], style={'width': '45%', 'display': 'inline-block'}),
                 html.Div([
-                    html.H3("Liberal Topics", style={'color': 'blue'}),
+                    html.H3("Liberal Topics", style={'color': 'blue', 'fontSize': '12pt'}),
                     html.Ul([html.Li(f"{item['Rank']}. {item['Topic']}") for item in liberal_issues])
-                ], style={'width': '20%', 'display': 'inline-block', 'marginLeft': '5%'})
+                ], style={'width': '24%', 'display': 'inline-block', 'marginLeft': '5%'})
             ])
         ])
     except:
