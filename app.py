@@ -17,7 +17,7 @@ COMMON_GROUND_URL = f"{BASE_URL}/api/common-ground-issues"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 MENTION_COUNT_URL = f"{BASE_URL}/api/mention-counts"
 
-app = dash.Dash(__name__)
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
 
 try:
@@ -92,11 +92,12 @@ def toggle_datepicker(selected):
 
 @app.callback(
     Output('mention-count-graph', 'figure'),
+    Input('subject-dropdown', 'value'),
     Input('time-range-dropdown', 'value'),
     Input('custom-date-picker', 'start_date'),
     Input('custom-date-picker', 'end_date')
 )
-def update_mention_chart(selected_range, start_date, end_date):
+def update_mention_chart(selected_subject, selected_range, start_date, end_date):
     if selected_range != 'Custom':
         start_date, end_date = time_ranges[selected_range]
     else:
@@ -106,7 +107,7 @@ def update_mention_chart(selected_range, start_date, end_date):
         end_date = datetime.strptime(end_date, '%Y-%m-%d')
 
     df_mentions = fetch_mention_counts(start_date, end_date)
-    df_mentions.sort_values("MentionCount", ascending=True, inplace=True)
+    df_mentions = df_mentions[df_mentions['Subject'] == selected_subject]
 
     fig = go.Figure(go.Bar(
         x=df_mentions['MentionCount'],
@@ -115,7 +116,7 @@ def update_mention_chart(selected_range, start_date, end_date):
         marker=dict(color='mediumslateblue')
     ))
     fig.update_layout(
-        title=f"Mentions by Subject ({selected_range})",
+        title=f"Mentions for {selected_subject} ({selected_range})",
         xaxis_title="Number of Mentions",
         yaxis_title="Subject",
         template="plotly_white",
@@ -125,6 +126,7 @@ def update_mention_chart(selected_range, start_date, end_date):
 
 if __name__ == '__main__':
     app.run(debug=False)
+
 
 
 
