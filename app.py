@@ -37,14 +37,6 @@ time_ranges = {
     "This Year": (datetime(datetime.now().year, 1, 1), datetime.now())
 }
 
-def fetch_json(url):
-    try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            return json.load(response)
-    except Exception as e:
-        print("Failed to fetch:", url, e)
-        return []
-
 def fetch_dataframe(url):
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
@@ -74,96 +66,129 @@ app.layout = html.Div([
     html.Div([
         html.H2("Mentions by Subject", style={'textAlign': 'center'}),
         dcc.Dropdown(
-            id='time-range-dropdown',
+            id='mention-time-range-dropdown',
             options=[{'label': k, 'value': k} for k in time_ranges.keys()] + [{'label': 'Custom Range', 'value': 'Custom'}],
             value='This Week',
             style={'width': '50%', 'margin': '0 auto'}
         ),
         html.Div([
             dcc.DatePickerRange(
-                id='custom-date-picker',
+                id='mention-custom-date-picker',
                 min_date_allowed=datetime(2022, 1, 1),
                 start_date=datetime.now() - timedelta(days=7),
                 end_date=datetime.now()
             )
-        ], id='custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
+        ], id='mention-custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
         dcc.Graph(id='mention-count-graph')
     ], className='card', style={'marginTop': '40px'}),
 
     html.Div([
         html.H2("Momentum Over Time", style={'textAlign': 'center'}),
+        dcc.Dropdown(
+            id='momentum-time-range-dropdown',
+            options=[{'label': k, 'value': k} for k in time_ranges.keys()] + [{'label': 'Custom Range', 'value': 'Custom'}],
+            value='This Week',
+            style={'width': '50%', 'margin': '0 auto'}
+        ),
+        html.Div([
+            dcc.DatePickerRange(
+                id='momentum-custom-date-picker',
+                min_date_allowed=datetime(2022, 1, 1),
+                start_date=datetime.now() - timedelta(days=7),
+                end_date=datetime.now()
+            )
+        ], id='momentum-custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
         dcc.Graph(id='momentum-graph')
     ], className='card', style={'marginTop': '40px'})
 ])
 
 @app.callback(
-    Output('custom-date-container', 'style'),
-    Input('time-range-dropdown', 'value')
+    Output('mention-custom-date-container', 'style'),
+    Input('mention-time-range-dropdown', 'value')
 )
-def toggle_datepicker(selected):
+def toggle_mention_datepicker(selected):
+    return {'textAlign': 'center', 'marginTop': '20px', 'display': 'block'} if selected == 'Custom' else {'display': 'none'}
+
+@app.callback(
+    Output('momentum-custom-date-container', 'style'),
+    Input('momentum-time-range-dropdown', 'value')
+)
+def toggle_momentum_datepicker(selected):
     return {'textAlign': 'center', 'marginTop': '20px', 'display': 'block'} if selected == 'Custom' else {'display': 'none'}
 
 @app.callback(
     Output('mention-count-graph', 'figure'),
-    Output('momentum-graph', 'figure'),
     Input('subject-dropdown', 'value'),
-    Input('time-range-dropdown', 'value'),
-    Input('custom-date-picker', 'start_date'),
-    Input('custom-date-picker', 'end_date')
+    Input('mention-time-range-dropdown', 'value'),
+    Input('mention-custom-date-picker', 'start_date'),
+    Input('mention-custom-date-picker', 'end_date')
 )
-def update_mention_and_momentum(selected_subject, selected_range, start_date, end_date):
+def update_mentions(selected_subject, selected_range, start_date, end_date):
     if selected_range != 'Custom':
         start, end = time_ranges[selected_range]
     else:
         if not start_date or not end_date:
-            return go.Figure(), go.Figure()
+            return go.Figure()
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
 
-    start_str = start.strftime('%Y-%m-%d')
-    end_str = end.strftime('%Y-%m-%d')
+    url = f"{MENTION_COUNT_URL}?start_date={start.strftime('%Y-%m-%d')}&end_date={end.strftime('%Y-%m-%d')}"
+    df = fetch_dataframe(url)
+    df = df[df['Subject'] == selected_subject]
 
-    # Mention Count
-    df_mentions = fetch_dataframe(f"{MENTION_COUNT_URL}?start_date={start_str}&end_date={end_str}")
-    df_mentions = df_mentions[df_mentions['Subject'] == selected_subject]
-
-    mention_fig = go.Figure(go.Bar(
-        x=df_mentions['MentionCount'],
-        y=df_mentions['Subject'],
+    fig = go.Figure(go.Bar(
+        x=df['MentionCount'],
+        y=df['Subject'],
         orientation='h',
         marker=dict(color='mediumslateblue')
     ))
-    mention_fig.update_layout(
+    fig.update_layout(
         title=f"Mentions for {selected_subject} ({selected_range})",
         xaxis_title="Number of Mentions",
         yaxis_title="Subject",
         template="plotly_white",
         margin=dict(l=100, r=40, t=60, b=40)
     )
+    return fig
 
-    # Momentum
-    df_momentum = fetch_dataframe(f"{MOMENTUM_URL}?start_date={start_str}&end_date={end_str}")
-    df_momentum = df_momentum[df_momentum['Subject'] == selected_subject]
+@app.callback(
+    Output('momentum-graph', 'figure'),
+    Input('subject-dropdown', 'value'),
+    Input('momentum-time-range-dropdown', 'value'),
+    Input('momentum-custom-date-picker', 'start_date'),
+    Input('momentum-custom-date-picker', 'end_date')
+)
+def update_momentum(selected_subject, selected_range, start_date, end_date):
+    if selected_range != 'Custom':
+        start, end = time_ranges[selected_range]
+    else:
+        if not start_date or not end_date:
+            return go.Figure()
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
 
-    momentum_fig = go.Figure()
-    if not df_momentum.empty:
-        df_momentum['ActivityDate'] = pd.to_datetime(df_momentum['ActivityDate'])
-        df_momentum = df_momentum.sort_values('ActivityDate')
-        momentum_fig.add_trace(go.Scatter(
-            x=df_momentum['ActivityDate'],
-            y=df_momentum['MomentumScore'],
+    url = f"{MOMENTUM_URL}?start_date={start.strftime('%Y-%m-%d')}&end_date={end.strftime('%Y-%m-%d')}"
+    df = fetch_dataframe(url)
+    df = df[df['Subject'] == selected_subject]
+
+    fig = go.Figure()
+    if not df.empty:
+        df['ActivityDate'] = pd.to_datetime(df['ActivityDate'])
+        df = df.sort_values('ActivityDate')
+        fig.add_trace(go.Scatter(
+            x=df['ActivityDate'],
+            y=df['MomentumScore'],
             mode='lines+markers',
             name=selected_subject,
             line=dict(color='orange')
         ))
-    momentum_fig.update_layout(
+    fig.update_layout(
         title=f"Momentum Over Time for {selected_subject}",
         xaxis_title="Date",
         yaxis_title="Momentum Score",
         template="plotly_white"
     )
-
-    return mention_fig, momentum_fig
+    return fig
 
 if __name__ == '__main__':
     app.run(debug=False)
