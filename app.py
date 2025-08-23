@@ -6,7 +6,6 @@ import urllib.request
 import json
 from datetime import datetime, timedelta
 
-
 BASE_URL = "https://e8eb17633693.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
@@ -18,62 +17,143 @@ COMMON_GROUND_URL = f"{BASE_URL}/api/common-ground-issues"
 MENTION_COUNT_URL = f"{BASE_URL}/api/mention-counts"
 MOMENTUM_URL = f"{BASE_URL}/api/momentum"
 
-
 app = dash.Dash(__name__)
 server = app.server
 
-
 def fetch_df(url):
-try:
-with urllib.request.urlopen(url, timeout=5) as r:
-return pd.DataFrame(json.load(r))
-except Exception as e:
-print(f"Fetch failed for {url}: {e}")
-return pd.DataFrame()
-
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return pd.DataFrame(json.load(r))
+    except Exception as e:
+        print(f"Fetch failed for {url}: {e}")
+        return pd.DataFrame()
 
 def fetch_json(url):
-try:
-with urllib.request.urlopen(url, timeout=5) as r:
-return json.load(r)
-except Exception as e:
-print(f"Fetch failed for {url}: {e}")
-return {}
-
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return json.load(r)
+    except Exception as e:
+        print(f"Fetch failed for {url}: {e}")
+        return {}
 
 TIME_OPTIONS = {
-"Today": (datetime.now(), datetime.now()),
-"This Week": (datetime.now() - timedelta(days=datetime.now().weekday()), datetime.now()),
-"This Month": (datetime(datetime.now().year, datetime.now().month, 1), datetime.now()),
-"This Year": (datetime(datetime.now().year, 1, 1), datetime.now())
+    "Today": (datetime.now(), datetime.now()),
+    "This Week": (datetime.now() - timedelta(days=datetime.now().weekday()), datetime.now()),
+    "This Month": (datetime(datetime.now().year, datetime.now().month, 1), datetime.now()),
+    "This Year": (datetime(datetime.now().year, 1, 1), datetime.now())
 }
 
-
 try:
-scorecard_df = fetch_df(SCORECARD_URL)
-subjects = sorted(scorecard_df["Subject"].dropna().unique())
-except Exception as e:
-print(f"Failed to load subjects: {e}")
-subjects = []
-
+    scorecard_df = fetch_df(SCORECARD_URL)
+    subjects = sorted(scorecard_df["Subject"].dropna().unique())
+except:
+    subjects = []
 
 app.layout = html.Div([
-html.Div([
-html.H1("Sentiment Dashboard", style={'textAlign': 'center'}),
-dcc.Dropdown(
-id='subject-dropdown',
-options=[{"label": s, "value": s} for s in subjects],
-value=subjects[0] if subjects else None,
-style={'width': '50%', 'margin': '0 auto'}
-)
-], style={'marginBottom': '40px'}),
+    html.Div([
+        html.H1("Sentiment Dashboard", style={'textAlign': 'center'}),
+        dcc.Dropdown(
+            id='subject-dropdown',
+            options=[{"label": s, "value": s} for s in subjects],
+            value=subjects[0] if subjects else None,
+            style={'width': '50%', 'margin': '0 auto'}
+        )
+    ], style={'marginBottom': '40px'}),
 
-
+   # Scorecard
 html.Div(id='scorecard-div'),
-html.Div([dcc.Graph(id='timeseries-graph')], style={'marginTop': '40px'}),
-html.Div(id='traits-div', style={'marginTop': '40px'}),
-html.Div(id='bill-sentiment-table', style={'marginTop': '40px'}),
-html.Div(id='top-issues-div', style={'marginTop': '40px'}),
+
+# Sentiment Over Time Card
+html.Div([
+    html.H2("Sentiment Over Time", style={'textAlign': 'center'}),
+    dcc.Graph(id='timeseries-graph')
+], style={
+    'marginTop': '40px',
+    'padding': '20px',
+    'border': '1px solid #ccc',
+    'borderRadius': '10px',
+    'boxShadow': '2px 2px 8px rgba(0,0,0,0.1)',
+    'background': '#f9f9f9'
+}),
+
+# Traits Card
+html.Div(id='traits-div', style={
+    'marginTop': '40px',
+    'padding': '20px',
+    'border': '1px solid #ccc',
+    'borderRadius': '10px',
+    'boxShadow': '2px 2px 8px rgba(0,0,0,0.1)',
+    'background': '#f9f9f9'
+}),
+
+# Bill Sentiment Card
+html.Div(id='bill-sentiment-table', style={
+    'marginTop': '40px',
+    'padding': '20px',
+    'border': '1px solid #ccc',
+    'borderRadius': '10px',
+    'boxShadow': '2px 2px 8px rgba(0,0,0,0.1)',
+    'background': '#f9f9f9'
+}),
+
+# Top Issues Card
+html.Div(id='top-issues-div', style={
+    'marginTop': '40px',
+    'padding': '20px',
+    'border': '1px solid #ccc',
+    'borderRadius': '10px',
+    'boxShadow': '2px 2px 8px rgba(0,0,0,0.1)',
+    'background': '#f9f9f9'
+}),
+
+# Common Ground Card
+html.Div(id='common-ground-div', style={
+    'marginTop': '40px',
+    'padding': '20px',
+    'border': '1px solid #ccc',
+    'borderRadius': '10px',
+    'boxShadow': '2px 2px 8px rgba(0,0,0,0.1)',
+    'background': '#f9f9f9'
+}),
+
+
+    html.Div([
+        html.H2("Mentions by Subject", style={'textAlign': 'center'}),
+        dcc.Dropdown(
+            id='mention-time-range-dropdown',
+            options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+            value='This Week',
+            style={'width': '50%', 'margin': '0 auto'}
+        ),
+        html.Div([
+            dcc.DatePickerRange(
+                id='mention-custom-date-picker',
+                min_date_allowed=datetime(2022, 1, 1),
+                start_date=datetime.now() - timedelta(days=7),
+                end_date=datetime.now()
+            )
+        ], id='mention-custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
+        dcc.Graph(id='mention-count-graph')
+    ], style={'marginTop': '40px'}),
+
+    html.Div([
+        html.H2("Momentum by Subject", style={'textAlign': 'center'}),
+        dcc.Dropdown(
+            id='momentum-time-range-dropdown',
+            options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+            value='This Week',
+            style={'width': '50%', 'margin': '0 auto'}
+        ),
+        html.Div([
+            dcc.DatePickerRange(
+                id='momentum-custom-date-picker',
+                min_date_allowed=datetime(2022, 1, 1),
+                start_date=datetime.now() - timedelta(days=7),
+                end_date=datetime.now()
+            )
+        ], id='momentum-custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
+        dcc.Graph(id='momentum-graph')
+    ], style={'marginTop': '40px'})
 ])
 
 @app.callback(
