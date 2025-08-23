@@ -72,7 +72,7 @@ app.layout = html.Div([
     html.Div(id='common-ground-div', className='card', style={'marginTop': '40px'}),
 
     html.Div([
-        html.H2("Mentions & Momentum Analysis", style={'textAlign': 'center'}),
+        html.H2("Mentions by Subject", style={'textAlign': 'center'}),
         dcc.Dropdown(
             id='time-range-dropdown',
             options=[{'label': k, 'value': k} for k in time_ranges.keys()] + [{'label': 'Custom Range', 'value': 'Custom'}],
@@ -87,7 +87,11 @@ app.layout = html.Div([
                 end_date=datetime.now()
             )
         ], id='custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
-        dcc.Graph(id='mention-count-graph'),
+        dcc.Graph(id='mention-count-graph')
+    ], className='card', style={'marginTop': '40px'}),
+
+    html.Div([
+        html.H2("Momentum Over Time", style={'textAlign': 'center'}),
         dcc.Graph(id='momentum-graph')
     ], className='card', style={'marginTop': '40px'})
 ])
@@ -109,16 +113,18 @@ def toggle_datepicker(selected):
 )
 def update_mention_and_momentum(selected_subject, selected_range, start_date, end_date):
     if selected_range != 'Custom':
-        start_date, end_date = time_ranges[selected_range]
+        start, end = time_ranges[selected_range]
     else:
         if not start_date or not end_date:
             return go.Figure(), go.Figure()
-        start_date = datetime.strptime(start_date, '%Y-%m-%d')
-        end_date = datetime.strptime(end_date, '%Y-%m-%d')
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+
+    start_str = start.strftime('%Y-%m-%d')
+    end_str = end.strftime('%Y-%m-%d')
 
     # Mention Count
-    mention_url = f"{MENTION_COUNT_URL}?start_date={start_date.strftime('%Y-%m-%d')}&end_date={end_date.strftime('%Y-%m-%d')}"
-    df_mentions = fetch_dataframe(mention_url)
+    df_mentions = fetch_dataframe(f"{MENTION_COUNT_URL}?start_date={start_str}&end_date={end_str}")
     df_mentions = df_mentions[df_mentions['Subject'] == selected_subject]
 
     mention_fig = go.Figure(go.Bar(
@@ -136,8 +142,7 @@ def update_mention_and_momentum(selected_subject, selected_range, start_date, en
     )
 
     # Momentum
-    momentum_url = f"{MOMENTUM_URL}?start_date={start_date.strftime('%Y-%m-%d')}&end_date={end_date.strftime('%Y-%m-%d')}"
-    df_momentum = fetch_dataframe(momentum_url)
+    df_momentum = fetch_dataframe(f"{MOMENTUM_URL}?start_date={start_str}&end_date={end_str}")
     df_momentum = df_momentum[df_momentum['Subject'] == selected_subject]
 
     momentum_fig = go.Figure()
@@ -162,6 +167,7 @@ def update_mention_and_momentum(selected_subject, selected_range, start_date, en
 
 if __name__ == '__main__':
     app.run(debug=False)
+
 
 
 
