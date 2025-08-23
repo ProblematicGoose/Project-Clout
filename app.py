@@ -163,11 +163,20 @@ def update_momentum(selected_subject, selected_range, start_date, end_date):
         start, end = time_ranges[selected_range]
     else:
         if not start_date or not end_date:
+            print("❌ Missing custom date values")
             return go.Figure()
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        end = datetime.strptime(end_date, '%Y-%m-%d')
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            print("❌ Invalid custom date format")
+            return go.Figure()
 
-    url = f"{MOMENTUM_URL}?start_date={start.strftime('%Y-%m-%d')}&end_date={end.strftime('%Y-%m-%d')}"
+    start_str = start.strftime('%Y-%m-%d')
+    end_str = end.strftime('%Y-%m-%d')
+    url = f"{MOMENTUM_URL}?start_date={start_str}&end_date={end_str}"
+    print("Momentum URL:", url)
+
     df = fetch_dataframe(url)
     df = df[df['Subject'] == selected_subject]
 
@@ -192,6 +201,7 @@ def update_momentum(selected_subject, selected_range, start_date, end_date):
 
 if __name__ == '__main__':
     app.run(debug=False)
+
 
 
 
