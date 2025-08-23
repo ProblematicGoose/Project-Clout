@@ -6,7 +6,7 @@ import urllib.request
 import json
 from datetime import datetime, timedelta
 
-BASE_URL = "https://21771abec19b.ngrok-free.app"
+BASE_URL = "https://9ebe265f25fa.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
