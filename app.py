@@ -6,7 +6,7 @@ import urllib.request
 import json
 from datetime import datetime, timedelta
 
-BASE_URL = "https://9ebe265f25fa.ngrok-free.app"
+BASE_URL = "https://e8eb17633693.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -49,7 +49,78 @@ try:
 except:
     subjects = []
 
+
 app.layout = html.Div([
+    html.H1("Sentiment Dashboard", style={'textAlign': 'center', 'paddingTop': '20px'}),
+    html.Div([
+        dcc.Dropdown(
+            id='subject-dropdown',
+            options=[{"label": s, "value": s} for s in subjects],
+            value=subjects[0] if subjects else None,
+            style={'width': '100%'}
+        )
+    ], className='dropdown-wrapper'),
+
+    html.Div([
+        html.Div(id='scorecard-div', className='dashboard-card'),
+        html.Div([
+            html.H2("Sentiment Over Time", className='center-text'),
+            dcc.Dropdown(
+                id='timeseries-time-range-dropdown',
+                options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+                value='This Month',
+                className='dcc-control'
+            ),
+            html.Div([
+                dcc.DatePickerRange(
+                    id='timeseries-custom-date-picker',
+                    min_date_allowed=datetime(2022, 1, 1),
+                    start_date=datetime.now() - timedelta(days=30),
+                    end_date=datetime.now()
+                )
+            ], id='timeseries-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
+            dcc.Graph(id='timeseries-graph', style={'height': '400px', 'overflow': 'hidden'})
+        ], className='dashboard-card'),
+        html.Div(id='dashboard-cards', className='dashboard-grid'),
+        html.Div([
+            html.H2("Mentions by Subject", className='center-text'),
+            dcc.Dropdown(
+                id='mention-time-range-dropdown',
+                options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+                value='This Week',
+                className='dcc-control'
+            ),
+            html.Div([
+                dcc.DatePickerRange(
+                    id='mention-custom-date-picker',
+                    min_date_allowed=datetime(2022, 1, 1),
+                    start_date=datetime.now() - timedelta(days=7),
+                    end_date=datetime.now()
+                )
+            ], id='mention-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
+            dcc.Graph(id='mention-count-graph', style={'height': '400px', 'overflow': 'hidden'})
+        ], className='dashboard-card'),
+        html.Div([
+            html.H2("Momentum by Subject", className='center-text'),
+            dcc.Dropdown(
+                id='momentum-time-range-dropdown',
+                options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+                value='This Week',
+                className='dcc-control'
+            ),
+            html.Div([
+                dcc.DatePickerRange(
+                    id='momentum-custom-date-picker',
+                    min_date_allowed=datetime(2022, 1, 1),
+                    start_date=datetime.now() - timedelta(days=7),
+                    end_date=datetime.now()
+                )
+            ], id='momentum-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
+            dcc.Graph(id='momentum-graph', style={'height': '400px', 'overflow': 'hidden'})
+        ], className='dashboard-card')
+    ], className='dashboard-grid')
+])
+
     html.H1("Sentiment Dashboard", style={'textAlign': 'center', 'paddingTop': '20px'}),
     html.Div([
         dcc.Dropdown(
