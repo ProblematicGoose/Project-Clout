@@ -419,7 +419,50 @@ def update_dashboard(subject):
                 ])
             ])
 
-    return scorecard_div, fig, traits_div, bill_table, issues_div, common_ground_div
+    return html.Div([
+        html.Div(scorecard_div, className='dashboard-card'),
+        html.Div(dcc.Graph(figure=fig), className='dashboard-card'),
+        html.Div(traits_div, className='dashboard-card'),
+        html.Div(bill_table, className='dashboard-card'),
+        html.Div(issues_div, className='dashboard-card'),
+        html.Div(common_ground_div, className='dashboard-card'),
+        html.Div([
+            html.H2("Mentions by Subject", style={'textAlign': 'center'}),
+            dcc.Dropdown(
+                id='mention-time-range-dropdown',
+                options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+                value='This Week',
+                style={'width': '100%', 'marginBottom': '10px'}
+            ),
+            html.Div([
+                dcc.DatePickerRange(
+                    id='mention-custom-date-picker',
+                    min_date_allowed=datetime(2022, 1, 1),
+                    start_date=datetime.now() - timedelta(days=7),
+                    end_date=datetime.now()
+                )
+            ], id='mention-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
+            dcc.Graph(id='mention-count-graph')
+        ], className='dashboard-card'),
+        html.Div([
+            html.H2("Momentum by Subject", style={'textAlign': 'center'}),
+            dcc.Dropdown(
+                id='momentum-time-range-dropdown',
+                options=[{'label': k, 'value': k} for k in TIME_OPTIONS] + [{'label': 'Custom Range', 'value': 'Custom'}],
+                value='This Week',
+                style={'width': '100%', 'marginBottom': '10px'}
+            ),
+            html.Div([
+                dcc.DatePickerRange(
+                    id='momentum-custom-date-picker',
+                    min_date_allowed=datetime(2022, 1, 1),
+                    start_date=datetime.now() - timedelta(days=7),
+                    end_date=datetime.now()
+                )
+            ], id='momentum-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
+            dcc.Graph(id='momentum-graph')
+        ], className='dashboard-card')
+    ], className='dashboard-grid')
 
 
 if __name__ == '__main__':
