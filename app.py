@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 
 # URLs for live data
-BASE_URL = "https://0d3d58348827.ngrok-free.app"
+BASE_URL = "https://e8eb17633693.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
 TRAITS_URL = f"{BASE_URL}/api/traits"
