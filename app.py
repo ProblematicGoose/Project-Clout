@@ -254,14 +254,28 @@ def update_dashboard(subject):
 
     color = 'green' if score > 6000 else 'crimson' if score < 4000 else 'orange'
     scorecard_div = html.Div([
+    html.Div([
         html.Img(src=photo_url, style={'width': '140px', 'height': '170px'}) if photo_url else html.Div(style={'width': '140px', 'height': '170px', 'background': '#eee'}),
-        html.Div([
-            html.H1(subject),
-            html.Div(f"{office} • {party} • {state}"),
-            html.Div("Sentiment Score", style={'marginTop': '14px'}),
-            html.Div(f"{score:,}", style={'fontSize': '56px', 'color': color, 'fontWeight': 'bold'})
-        ])
-    ], style={'display': 'flex', 'gap': '24px'})
+    ]),
+    html.Div([
+        html.H1(subject, style={'marginBottom': '4px'}),
+        html.Div(f"{office} • {party} • {state}", style={'color': '#666', 'marginBottom': '12px'}),
+        html.Div("Sentiment Score", style={'fontWeight': 'bold', 'marginBottom': '4px'}),
+        html.Div(f"{score:,}", style={'fontSize': '56px', 'color': color, 'fontWeight': 'bold'})
+    ])
+], style={
+    'display': 'flex',
+    'alignItems': 'center',
+    'gap': '24px',
+    'padding': '20px',
+    'border': '1px solid #ccc',
+    'borderRadius': '10px',
+    'boxShadow': '2px 2px 8px rgba(0,0,0,0.1)',
+    'background': '#f9f9f9',
+    'width': 'fit-content',
+    'margin': '0 auto'
+})
+
 
     # Sentiment over time
     df = fetch_df(TIMESERIES_URL)
