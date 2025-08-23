@@ -6,52 +6,57 @@ import urllib.request
 import json
 from datetime import datetime, timedelta
 
-# URLs for live data
+# --------------------------- CONFIG ---------------------------
 BASE_URL = "https://e8eb17633693.ngrok-free.app"
-SCORECARD_URL = f"{BASE_URL}/api/scorecard"
-TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
-TRAITS_URL = f"{BASE_URL}/api/traits"
-BILL_SENTIMENT_URL = f"{BASE_URL}/api/bill-sentiment"
-TOP_ISSUES_URL = f"{BASE_URL}/api/top-issues"
-COMMON_GROUND_URL = f"{BASE_URL}/api/common-ground-issues"
-PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
-MENTION_COUNT_URL = f"{BASE_URL}/api/mention-counts"
-MOMENTUM_URL = f"{BASE_URL}/api/momentum"
+ENDPOINTS = {
+    "scorecard": f"{BASE_URL}/api/scorecard",
+    "timeseries": f"{BASE_URL}/api/timeseries",
+    "traits": f"{BASE_URL}/api/traits",
+    "bills": f"{BASE_URL}/api/bill-sentiment",
+    "issues": f"{BASE_URL}/api/top-issues",
+    "common": f"{BASE_URL}/api/common-ground-issues",
+    "photos": f"{BASE_URL}/api/subject-photos",
+    "mentions": f"{BASE_URL}/api/mention-counts",
+    "momentum": f"{BASE_URL}/api/momentum"
+}
 
-app = dash.Dash(__name__, suppress_callback_exceptions=True)
-server = app.server
-
-try:
-    with urllib.request.urlopen(SCORECARD_URL, timeout=5) as url:
-        subjects_data = json.load(url)
-    subjects = sorted({entry["Subject"].strip() for entry in subjects_data if entry["Subject"] is not None})
-except Exception as e:
-    print("Failed to load initial subjects:", e)
-    subjects = []
-
-# Time range options
-time_ranges = {
+TIME_RANGES = {
     "Today": (datetime.now(), datetime.now()),
     "This Week": (datetime.now() - timedelta(days=datetime.now().weekday()), datetime.now()),
     "This Month": (datetime(datetime.now().year, datetime.now().month, 1), datetime.now()),
     "This Year": (datetime(datetime.now().year, 1, 1), datetime.now())
 }
 
-def fetch_dataframe(url):
+# --------------------------- INIT APP ---------------------------
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
+server = app.server
+
+# --------------------------- HELPERS ---------------------------
+def fetch_df(url):
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            return pd.DataFrame(json.load(response))
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return pd.DataFrame(json.load(r))
     except Exception as e:
-        print("Failed to fetch:", url, e)
+        print(f"Fetch failed for {url}: {e}")
         return pd.DataFrame()
+
+def load_subjects():
+    try:
+        df = fetch_df(ENDPOINTS["scorecard"])
+        return sorted(df["Subject"].dropna().unique())
+    except:
+        return []
+
+# --------------------------- LAYOUT ---------------------------
+subjects = load_subjects()
 
 app.layout = html.Div([
     html.Div([
         html.H1("Sentiment Dashboard", style={'textAlign': 'center'}),
         dcc.Dropdown(
             id='subject-dropdown',
-            options=[{'label': subj, 'value': subj} for subj in subjects],
-            value=next(iter(subjects), None),
+            options=[{"label": s, "value": s} for s in subjects],
+            value=subjects[0] if subjects else None,
             style={'width': '50%', 'margin': '0 auto'}
         )
     ], style={'marginBottom': '40px'}),
@@ -59,145 +64,114 @@ app.layout = html.Div([
     html.Div(id='scorecard-div', className='card'),
     html.Div([dcc.Graph(id='timeseries-graph')], className='card'),
     html.Div(id='traits-div', className='card'),
-    html.Div(id='bill-sentiment-table', className='card', style={'marginTop': '40px'}),
-    html.Div(id='top-issues-div', className='card', style={'marginTop': '40px'}),
-    html.Div(id='common-ground-div', className='card', style={'marginTop': '40px'}),
-
-    html.Div([
-        html.H2("Mentions by Subject", style={'textAlign': 'center'}),
-        dcc.Dropdown(
-            id='mention-time-range-dropdown',
-            options=[{'label': k, 'value': k} for k in time_ranges.keys()] + [{'label': 'Custom Range', 'value': 'Custom'}],
-            value='This Week',
-            style={'width': '50%', 'margin': '0 auto'}
-        ),
-        html.Div([
-            dcc.DatePickerRange(
-                id='mention-custom-date-picker',
-                min_date_allowed=datetime(2022, 1, 1),
-                start_date=datetime.now() - timedelta(days=7),
-                end_date=datetime.now()
-            )
-        ], id='mention-custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
-        dcc.Graph(id='mention-count-graph')
-    ], className='card', style={'marginTop': '40px'}),
-
-    html.Div([
-        html.H2("Momentum Over Time", style={'textAlign': 'center'}),
-        dcc.Dropdown(
-            id='momentum-time-range-dropdown',
-            options=[{'label': k, 'value': k} for k in time_ranges.keys()] + [{'label': 'Custom Range', 'value': 'Custom'}],
-            value='This Week',
-            style={'width': '50%', 'margin': '0 auto'}
-        ),
-        html.Div([
-            dcc.DatePickerRange(
-                id='momentum-custom-date-picker',
-                min_date_allowed=datetime(2022, 1, 1),
-                start_date=datetime.now() - timedelta(days=7),
-                end_date=datetime.now()
-            )
-        ], id='momentum-custom-date-container', style={'textAlign': 'center', 'marginTop': '20px', 'display': 'none'}),
-        dcc.Graph(id='momentum-graph')
-    ], className='card', style={'marginTop': '40px'})
+    html.Div(id='bill-sentiment-table', className='card'),
+    html.Div(id='top-issues-div', className='card'),
+    html.Div(id='common-ground-div', className='card')
 ])
 
+# --------------------------- CALLBACK ---------------------------
 @app.callback(
-    Output('mention-custom-date-container', 'style'),
-    Input('mention-time-range-dropdown', 'value')
+    Output('scorecard-div', 'children'),
+    Output('timeseries-graph', 'figure'),
+    Output('traits-div', 'children'),
+    Output('bill-sentiment-table', 'children'),
+    Output('top-issues-div', 'children'),
+    Output('common-ground-div', 'children'),
+    Input('subject-dropdown', 'value')
 )
-def toggle_mention_datepicker(selected):
-    return {'textAlign': 'center', 'marginTop': '20px', 'display': 'block'} if selected == 'Custom' else {'display': 'none'}
+def update_dashboard(subject):
+    # --- Scorecard ---
+    score = 5000
+    scorecard = fetch_df(ENDPOINTS["scorecard"])
+    row = scorecard[scorecard.Subject == subject]
+    if not row.empty:
+        score = int(row.NormalizedSentimentScore.iloc[0])
 
-@app.callback(
-    Output('momentum-custom-date-container', 'style'),
-    Input('momentum-time-range-dropdown', 'value')
-)
-def toggle_momentum_datepicker(selected):
-    return {'textAlign': 'center', 'marginTop': '20px', 'display': 'block'} if selected == 'Custom' else {'display': 'none'}
+    photo = fetch_df(ENDPOINTS["photos"])
+    meta = photo[photo.Subject == subject]
+    photo_url, office, party, state = None, '', '', ''
+    if not meta.empty:
+        photo_url = meta.PhotoURL.iloc[0]
+        office, party, state = meta.OfficeTitle.iloc[0], meta.Party.iloc[0], meta.State.iloc[0]
 
-@app.callback(
-    Output('mention-count-graph', 'figure'),
-    Input('subject-dropdown', 'value'),
-    Input('mention-time-range-dropdown', 'value'),
-    Input('mention-custom-date-picker', 'start_date'),
-    Input('mention-custom-date-picker', 'end_date')
-)
-def update_mentions(selected_subject, selected_range, start_date, end_date):
-    if selected_range != 'Custom':
-        start, end = time_ranges[selected_range]
-    else:
-        if not start_date or not end_date:
-            return go.Figure()
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        end = datetime.strptime(end_date, '%Y-%m-%d')
+    color = 'green' if score > 6000 else 'crimson' if score < 4000 else 'orange'
+    scorecard_div = html.Div([
+        html.Img(src=photo_url, style={'width': '140px', 'height': '170px'}) if photo_url else html.Div(style={'width': '140px', 'height': '170px', 'background': '#eee'}),
+        html.Div([
+            html.H1(subject),
+            html.Div(f"{office} • {party} • {state}"),
+            html.Div("Sentiment Score", style={'marginTop': '14px'}),
+            html.Div(f"{score:,}", style={'fontSize': '56px', 'color': color, 'fontWeight': 'bold'})
+        ])
+    ], style={'display': 'flex', 'gap': '24px'})
 
-    url = f"{MENTION_COUNT_URL}?start_date={start.strftime('%Y-%m-%d')}&end_date={end.strftime('%Y-%m-%d')}"
-    df = fetch_dataframe(url)
-    df = df[df['Subject'] == selected_subject]
-
-    fig = go.Figure(go.Bar(
-        x=df['MentionCount'],
-        y=df['Subject'],
-        orientation='h',
-        marker=dict(color='mediumslateblue')
-    ))
-    fig.update_layout(
-        title=f"Mentions for {selected_subject} ({selected_range})",
-        xaxis_title="Number of Mentions",
-        yaxis_title="Subject",
-        template="plotly_white",
-        margin=dict(l=100, r=40, t=60, b=40)
-    )
-    return fig
-
-@app.callback(
-    Output('momentum-graph', 'figure'),
-    Input('subject-dropdown', 'value'),
-    Input('momentum-time-range-dropdown', 'value'),
-    Input('momentum-custom-date-picker', 'start_date'),
-    Input('momentum-custom-date-picker', 'end_date')
-)
-def update_momentum(selected_subject, selected_range, start_date, end_date):
-    if selected_range != 'Custom':
-        start, end = time_ranges[selected_range]
-    else:
-        if not start_date or not end_date:
-            print("❌ Missing custom date values")
-            return go.Figure()
-        try:
-            start = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-        except ValueError:
-            print("❌ Invalid custom date format")
-            return go.Figure()
-
-    start_str = start.strftime('%Y-%m-%d')
-    end_str = end.strftime('%Y-%m-%d')
-    url = f"{MOMENTUM_URL}?start_date={start_str}&end_date={end_str}"
-    print("Momentum URL:", url)
-
-    df = fetch_dataframe(url)
-    df = df[df['Subject'] == selected_subject]
-
+    # --- Timeseries ---
+    df = fetch_df(ENDPOINTS["timeseries"])
+    df['SentimentDate'] = pd.to_datetime(df['SentimentDate'])
+    ts = df[df.Subject == subject]
     fig = go.Figure()
-    if not df.empty:
-        df['ActivityDate'] = pd.to_datetime(df['ActivityDate'])
-        df = df.sort_values('ActivityDate')
-        fig.add_trace(go.Scatter(
-            x=df['ActivityDate'],
-            y=df['MomentumScore'],
-            mode='lines+markers',
-            name=selected_subject,
-            line=dict(color='orange')
-        ))
-    fig.update_layout(
-        title=f"Momentum Over Time for {selected_subject}",
-        xaxis_title="Date",
-        yaxis_title="Momentum Score",
-        template="plotly_white"
-    )
-    return fig
+    fig.add_trace(go.Scatter(x=ts['SentimentDate'], y=ts['NormalizedSentimentScore'], mode='lines+markers'))
+    fig.update_layout(title="Sentiment Over Time", yaxis_range=[0, 10000], template='plotly_white')
+
+    # --- Traits ---
+    tr = fetch_df(ENDPOINTS["traits"])
+    tr = tr[tr.Subject == subject]
+    pos = tr[tr.TraitType == 'Positive'].sort_values('TraitRank').TraitDescription.tolist()
+    neg = tr[tr.TraitType == 'Negative'].sort_values('TraitRank').TraitDescription.tolist()
+    traits_div = html.Div([
+        html.H2("People like it when I...", style={'color': 'green'}),
+        html.Ul([html.Li(p) for p in pos]),
+        html.H2("People don't like it when I...", style={'color': 'crimson'}),
+        html.Ul([html.Li(n) for n in neg])
+    ])
+
+    # --- Bills ---
+    bills = fetch_df(ENDPOINTS["bills"])
+    bill_table = html.Div([
+        html.H2("Public Sentiment Toward National Bills", style={'textAlign': 'center'}),
+        html.Table([
+            html.Thead([html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])]),
+            html.Tbody([
+                html.Tr([html.Td(r.BillName), html.Td(round(r.AverageSentimentScore, 2)), html.Td(r.SentimentLabel)]) for _, r in bills.iterrows()
+            ])
+        ], style={'width': '80%', 'margin': '0 auto'})
+    ])
+
+    # --- Top Issues ---
+    issues = fetch_df(ENDPOINTS["issues"])
+    week = issues.WeekStartDate.iloc[0] if not issues.empty else ""
+    top_issues_div = html.Div([
+        html.H2(f"Top Issues for the Week of {week}"),
+        html.Div([
+            html.Div([
+                html.H3("Conservative Topics", style={'color': 'crimson'}),
+                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for _, t in issues[issues.IdeologyLabel=='Conservative'].iterrows()])
+            ], style={'width': '45%', 'display': 'inline-block'}),
+            html.Div([
+                html.H3("Liberal Topics", style={'color': 'blue'}),
+                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for _, t in issues[issues.IdeologyLabel=='Liberal'].iterrows()])
+            ], style={'width': '45%', 'display': 'inline-block', 'marginLeft': '5%'})
+        ])
+    ])
+
+    # --- Common Ground ---
+    cg = fetch_df(ENDPOINTS["common"])
+    cg = cg[cg.Subject.str.lower() == subject.lower()].sort_values('IssueRank')
+    if cg.empty:
+        common_ground_div = html.Div([html.H3("No common ground issues found.", style={'textAlign': 'center'})])
+    else:
+        common_ground_div = html.Div([
+            html.H2("Issues to focus on to win over moderates"),
+            html.Ul([
+                html.Li([
+                    html.Span(f"{r.IssueRank}. ", style={'fontWeight': 'bold'}),
+                    html.Span(f"{r.Issue}: ", style={'fontWeight': 'bold'}),
+                    html.Span(r.Explanation)
+                ]) for _, r in cg.iterrows()
+            ])
+        ])
+
+    return scorecard_div, fig, traits_div, bill_table, top_issues_div, common_ground_div
 
 if __name__ == '__main__':
     app.run(debug=False)
