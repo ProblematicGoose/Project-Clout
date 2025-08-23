@@ -6,7 +6,7 @@ import urllib.request
 import json
 from datetime import datetime, timedelta
 
-BASE_URL = "https://e8eb17633693.ngrok-free.app"
+BASE_URL = "https://21771abec19b.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -78,8 +78,8 @@ app.layout = html.Div([
                         end_date=datetime.now()
                     )
                 ], id='timeseries-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
-                dcc.Graph(id='timeseries-graph')
-            ], className='dashboard-card full-width'),
+                dcc.Graph(id='timeseries-graph', style={'height': '400px', 'overflow': 'hidden'})
+            ], className='dashboard-card'),
 
             html.Div(id='dashboard-cards', className='dashboard-grid'),
 
@@ -99,7 +99,7 @@ app.layout = html.Div([
                         end_date=datetime.now()
                     )
                 ], id='mention-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
-                dcc.Graph(id='mention-count-graph')
+                dcc.Graph(id='mention-count-graph', style={'height': '400px', 'overflow': 'hidden'})
             ], className='dashboard-card'),
 
             html.Div([
@@ -118,7 +118,7 @@ app.layout = html.Div([
                         end_date=datetime.now()
                     )
                 ], id='momentum-custom-date-container', style={'textAlign': 'center', 'marginTop': '10px', 'display': 'none'}),
-                dcc.Graph(id='momentum-graph')
+                dcc.Graph(id='momentum-graph', style={'height': '400px', 'overflow': 'hidden'})
             ], className='dashboard-card')
         ], className='dashboard-grid')
     ])
@@ -250,7 +250,9 @@ def update_momentum_graph(subject, range_choice, custom_start, custom_end):
 )
 def update_dashboard(subject):
     scorecard = fetch_df(SCORECARD_URL)
-    row = scorecard[scorecard.Subject == subject]
+    if 'Subject' not in scorecard.columns or scorecard.empty:
+        return [html.Div(html.H3("No scorecard data available."), className='dashboard-card')]
+    row = scorecard[scorecard['Subject'] == subject]
     score = int(row.NormalizedSentimentScore.iloc[0]) if not row.empty else 5000
 
     photo = fetch_df(PHOTOS_URL)
