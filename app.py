@@ -1,5 +1,5 @@
 import dash
-from dash import dcc, html, Input, Output, State
+from dash import dcc, html, Input, Output
 import pandas as pd
 import plotly.graph_objs as go
 import urllib.parse
@@ -45,7 +45,6 @@ def fetch_json(url: str, timeout: int = 15) -> dict:
 
 
 def fetch_df_with_params(base_url: str, params: dict) -> pd.DataFrame:
-    """Attempt to call API with query parameters; falls back to plain fetch if needed."""
     try:
         query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
         url = f"{base_url}?{query}"
@@ -60,15 +59,11 @@ def start_of_today() -> datetime:
 
 
 def date_range_from_mode(mode: str, custom_start: str | None, custom_end: str | None) -> tuple[datetime, datetime]:
-    """Return (start_datetime, end_datetime) based on mode.
-    custom_* are ISO date strings from DatePickerRange like '2025-08-23'.
-    """
     now = datetime.now()
     if mode == "Today":
         start = start_of_today()
         end = now
     elif mode == "This Week":
-        # start of week = Monday
         monday = start_of_today() - timedelta(days=start_of_today().weekday())
         start = monday
         end = now
@@ -81,27 +76,41 @@ def date_range_from_mode(mode: str, custom_start: str | None, custom_end: str | 
         start = first
         end = now
     elif mode == "Custom":
-        # If user hasn't set both yet, default to last 30 days
         try:
             start_date = datetime.fromisoformat(custom_start) if custom_start else (now - timedelta(days=30))
         except Exception:
             start_date = now - timedelta(days=30)
         try:
-            # DatePickerRange gives a date with no time; set end to end-of-day
             end_date = datetime.fromisoformat(custom_end) if custom_end else now
         except Exception:
             end_date = now
-        # ensure ordering
         if end_date < start_date:
             start_date, end_date = end_date, start_date
-        # include the whole end day
         end = end_date + timedelta(days=1) - timedelta(seconds=1)
         start = start_date
     else:
-        # Safe default: last 30 days
         start = now - timedelta(days=30)
         end = now
     return start, end
+
+
+def coerce_int(value, default=0):
+    try:
+        if pd.isna(value):
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def safe_first(series, default=None):
+    try:
+        v = series.iloc[0]
+        if pd.isna(v):
+            return default
+        return v
+    except Exception:
+        return default
 
 
 TIME_MODES = [
@@ -120,11 +129,11 @@ except Exception:
     subjects = []
 
 # -----------------------------
-# Layout
+# Layout (single grid)
 # -----------------------------
 app.layout = html.Div([
     html.H1("Sentiment Dashboard", style={"textAlign": "center", "paddingTop": "20px"}),
-    # Subject selector
+
     html.Div([
         dcc.Dropdown(
             id="subject-dropdown",
@@ -135,41 +144,108 @@ app.layout = html.Div([
         )
     ], className="dropdown-wrapper"),
 
-    # Grid holds the cards
     html.Div(id="dashboard-grid", className="dashboard-grid"),
 ])
 
+
 # -----------------------------
-# Dashboard (subject-dependent) structure
+# Chart card components we always render inside the grid
+# -----------------------------
+
+def chart_cards():
+    return [
+        html.Div([
+            html.H2("Sentiment Over Time", className="center-text"),
+            html.Div([
+                dcc.RadioItems(
+                    id="sentiment-range-mode",
+                    options=TIME_MODES,
+                    value="This Month",
+                    inline=True,
+                ),
+                dcc.DatePickerRange(
+                    id="sentiment-custom-range",
+                    display_format="YYYY-MM-DD",
+                    start_date=(date.today() - timedelta(days=30)),
+                    end_date=date.today(),
+                ),
+            ], className="control-row"),
+            dcc.Loading(dcc.Graph(id="sentiment-graph", style={"height": "400px"})),
+        ], className="dashboard-card"),
+
+        html.Div([
+            html.H2("Mentions by Subject", className="center-text"),
+            html.Div([
+                dcc.RadioItems(
+                    id="mentions-range-mode",
+                    options=TIME_MODES,
+                    value="This Month",
+                    inline=True,
+                ),
+                dcc.DatePickerRange(
+                    id="mentions-custom-range",
+                    display_format="YYYY-MM-DD",
+                    start_date=(date.today() - timedelta(days=30)),
+                    end_date=date.today(),
+                ),
+            ], className="control-row"),
+            dcc.Loading(dcc.Graph(id="mentions-graph", style={"height": "400px"})),
+        ], className="dashboard-card"),
+
+        html.Div([
+            html.H2("Momentum by Subject", className="center-text"),
+            html.Div([
+                dcc.RadioItems(
+                    id="momentum-range-mode",
+                    options=TIME_MODES,
+                    value="This Month",
+                    inline=True,
+                ),
+                dcc.DatePickerRange(
+                    id="momentum-custom-range",
+                    display_format="YYYY-MM-DD",
+                    start_date=(date.today() - timedelta(days=30)),
+                    end_date=date.today(),
+                ),
+            ], className="control-row"),
+            dcc.Loading(dcc.Graph(id="momentum-graph", style={"height": "400px"})),
+        ], className="dashboard-card"),
+    ]
+
+
+# -----------------------------
+# Dashboard builder: dynamic cards + fixed chart cards
 # -----------------------------
 @app.callback(
     Output("dashboard-grid", "children"),
     Input("subject-dropdown", "value"),
 )
 def render_dashboard(subject):
-    if subject is None:
-        return [html.Div("Choose a subject to begin.", className="dashboard-card")]
+    dynamic_cards = []
 
-    cards = []
+    if not subject:
+        dynamic_cards.append(html.Div("Choose a subject to begin.", className="dashboard-card"))
+        return dynamic_cards + chart_cards()
 
     # Scorecard
     scorecard = fetch_df(SCORECARD_URL)
     photo = fetch_df(PHOTOS_URL)
     score, office, party, state, photo_url = 5000, "", "", "", None
     if not scorecard.empty and "Subject" in scorecard.columns:
-        row = scorecard[scorecard["Subject"] == subject]
+        row = scorecard[scorecard["Subject"].astype(str) == str(subject)]
         if not row.empty and "NormalizedSentimentScore" in row.columns:
-            score = int(row["NormalizedSentimentScore"].iloc[0])
+            val = safe_first(row["NormalizedSentimentScore"], None)
+            score = coerce_int(val, default=5000)
     if not photo.empty and "Subject" in photo.columns:
-        meta = photo[photo["Subject"] == subject]
+        meta = photo[photo["Subject"].astype(str) == str(subject)]
         if not meta.empty:
-            photo_url = meta.get("PhotoURL", pd.Series([None])).iloc[0]
-            office = meta.get("OfficeTitle", pd.Series([""])).iloc[0]
-            party = meta.get("Party", pd.Series([""])).iloc[0]
-            state = meta.get("State", pd.Series([""])).iloc[0]
+            photo_url = safe_first(meta.get("PhotoURL", pd.Series([None])), None)
+            office = safe_first(meta.get("OfficeTitle", pd.Series([""])), "") or ""
+            party = safe_first(meta.get("Party", pd.Series([""])), "") or ""
+            state = safe_first(meta.get("State", pd.Series([""])), "") or ""
 
     color = "green" if score > 6000 else "crimson" if score < 4000 else "orange"
-    cards.append(
+    dynamic_cards.append(
         html.Div(
             [
                 html.Div([
@@ -192,16 +268,15 @@ def render_dashboard(subject):
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
-        tsub = traits[traits["Subject"] == subject]
-        if not tsub.empty:
-            if {"TraitType", "TraitRank", "TraitDescription"}.issubset(tsub.columns):
-                pos_list = (
-                    tsub[tsub["TraitType"] == "Positive"].sort_values("TraitRank")["TraitDescription"].tolist()
-                )
-                neg_list = (
-                    tsub[tsub["TraitType"] == "Negative"].sort_values("TraitRank")["TraitDescription"].tolist()
-                )
-    cards.append(
+        tsub = traits[traits["Subject"].astype(str) == str(subject)]
+        if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription"}.issubset(tsub.columns):
+            pos_list = (
+                tsub[tsub["TraitType"] == "Positive"].sort_values("TraitRank")["TraitDescription"].dropna().tolist()
+            )
+            neg_list = (
+                tsub[tsub["TraitType"] == "Negative"].sort_values("TraitRank")["TraitDescription"].dropna().tolist()
+            )
+    dynamic_cards.append(
         html.Div(
             [
                 html.H2("Behavioral Traits", className="center-text"),
@@ -221,9 +296,13 @@ def render_dashboard(subject):
     # Bill Sentiment
     bills = fetch_df(BILL_SENTIMENT_URL)
     if bills.empty:
-        cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
+        dynamic_cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
     else:
-        cards.append(
+        # normalize expected columns
+        for col in ["BillName", "AverageSentimentScore", "SentimentLabel"]:
+            if col not in bills.columns:
+                bills[col] = None
+        dynamic_cards.append(
             html.Div(
                 [
                     html.H2("Public Sentiment Toward National Bills", className="center-text"),
@@ -234,12 +313,16 @@ def render_dashboard(subject):
                                 [
                                     html.Tr(
                                         [
-                                            html.Td(row.get("BillName", "")),
-                                            html.Td(round(row.get("AverageSentimentScore", 0), 2)),
-                                            html.Td(row.get("SentimentLabel", "")),
+                                            html.Td(r.get("BillName", "") if isinstance(r, dict) else r["BillName"]),
+                                            html.Td(
+                                                (lambda v: round(v, 2) if pd.notna(v) else "—")(
+                                                    r.get("AverageSentimentScore", None) if isinstance(r, dict) else r["AverageSentimentScore"]
+                                                )
+                                            ),
+                                            html.Td(r.get("SentimentLabel", "") if isinstance(r, dict) else r["SentimentLabel"]),
                                         ]
                                     )
-                                    for _, row in bills.iterrows()
+                                    for _, r in bills.iterrows()
                                 ]
                             ),
                         ],
@@ -250,45 +333,13 @@ def render_dashboard(subject):
             )
         )
 
-    # -----------------------------
-    # Sentiment Over Time (with timeframe controls)
-    # -----------------------------
-    cards.append(
-        html.Div(
-            [
-                html.H2("Sentiment Over Time", className="center-text"),
-                html.Div(
-                    [
-                        dcc.RadioItems(
-                            id="sentiment-range-mode",
-                            options=TIME_MODES,
-                            value="This Month",
-                            inline=True,
-                        ),
-                        dcc.DatePickerRange(
-                            id="sentiment-custom-range",
-                            display_format="YYYY-MM-DD",
-                            start_date=(date.today() - timedelta(days=30)),
-                            end_date=date.today(),
-                        ),
-                    ],
-                    className="control-row",
-                ),
-                dcc.Loading(dcc.Graph(id="sentiment-graph", style={"height": "400px"})),
-            ],
-            className="dashboard-card",
-        )
-    )
-
-    # -----------------------------
-    # Top Issues (static)
-    # -----------------------------
+    # Top Issues
     issues = fetch_json(TOP_ISSUES_URL)
     if issues and all(k in issues for k in ("Liberal", "Conservative", "WeekStartDate")):
         week = issues["WeekStartDate"]
         liberal = issues["Liberal"]
         conservative = issues["Conservative"]
-        cards.append(
+        dynamic_cards.append(
             html.Div(
                 [
                     html.H2(f"Top Issues (Week of {week})", className="center-text"),
@@ -296,12 +347,12 @@ def render_dashboard(subject):
                         [
                             html.Div([
                                 html.H3("Conservative Topics", style={"color": "crimson"}),
-                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for t in conservative]),
+                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for t in conservative if t and 'Rank' in t and 'Topic' in t]),
                             ], style={"width": "45%", "display": "inline-block"}),
                             html.Div(
                                 [
                                     html.H3("Liberal Topics", style={"color": "blue"}),
-                                    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for t in liberal]),
+                                    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for t in liberal if t and 'Rank' in t and 'Topic' in t]),
                                 ],
                                 style={"width": "45%", "display": "inline-block", "marginLeft": "5%"},
                             ),
@@ -312,14 +363,12 @@ def render_dashboard(subject):
             )
         )
 
-    # -----------------------------
-    # Common Ground (static)
-    # -----------------------------
+    # Common Ground
     common_df = fetch_df(COMMON_GROUND_URL)
     if not common_df.empty and "Subject" in common_df.columns:
-        filtered = common_df[common_df["Subject"] == subject]
+        filtered = common_df[common_df["Subject"].astype(str) == str(subject)]
         if not filtered.empty:
-            cards.append(
+            dynamic_cards.append(
                 html.Div(
                     [
                         html.H2("Common Ground Issues", className="center-text"),
@@ -340,71 +389,11 @@ def render_dashboard(subject):
                 )
             )
 
-    # -----------------------------
-    # Mentions (with timeframe controls)
-    # -----------------------------
-    cards.append(
-        html.Div(
-            [
-                html.H2("Mentions by Subject", className="center-text"),
-                html.Div(
-                    [
-                        dcc.RadioItems(
-                            id="mentions-range-mode",
-                            options=TIME_MODES,
-                            value="This Month",
-                            inline=True,
-                        ),
-                        dcc.DatePickerRange(
-                            id="mentions-custom-range",
-                            display_format="YYYY-MM-DD",
-                            start_date=(date.today() - timedelta(days=30)),
-                            end_date=date.today(),
-                        ),
-                    ],
-                    className="control-row",
-                ),
-                dcc.Loading(dcc.Graph(id="mentions-graph", style={"height": "400px"})),
-            ],
-            className="dashboard-card",
-        )
-    )
-
-    # -----------------------------
-    # Momentum (with timeframe controls)
-    # -----------------------------
-    cards.append(
-        html.Div(
-            [
-                html.H2("Momentum by Subject", className="center-text"),
-                html.Div(
-                    [
-                        dcc.RadioItems(
-                            id="momentum-range-mode",
-                            options=TIME_MODES,
-                            value="This Month",
-                            inline=True,
-                        ),
-                        dcc.DatePickerRange(
-                            id="momentum-custom-range",
-                            display_format="YYYY-MM-DD",
-                            start_date=(date.today() - timedelta(days=30)),
-                            end_date=date.today(),
-                        ),
-                    ],
-                    className="control-row",
-                ),
-                dcc.Loading(dcc.Graph(id="momentum-graph", style={"height": "400px"})),
-            ],
-            className="dashboard-card",
-        )
-    )
-
-    return cards
+    return dynamic_cards + chart_cards()
 
 
 # -----------------------------
-# Interactivity: Enable/disable custom date pickers based on mode
+# Enable/disable custom date pickers based on mode
 # -----------------------------
 @app.callback(
     Output("sentiment-custom-range", "disabled"),
@@ -431,9 +420,8 @@ def toggle_momentum_custom(mode):
 
 
 # -----------------------------
-# Chart callbacks
+# Chart callbacks (subject + timeframe aware)
 # -----------------------------
-# Sentiment Over Time
 @app.callback(
     Output("sentiment-graph", "figure"),
     [
@@ -444,6 +432,11 @@ def toggle_momentum_custom(mode):
     ],
 )
 def update_sentiment_chart(subject, mode, custom_start, custom_end):
+    fig = go.Figure()
+    if not subject:
+        fig.update_layout(title="Select a subject to view data.", template="plotly_white")
+        return fig
+
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
     df = fetch_df_with_params(TIMESERIES_URL, {
@@ -453,12 +446,9 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
     })
 
     if df.empty:
-        # fall back to plain endpoint and client-side filter if necessary
         df = fetch_df(TIMESERIES_URL)
 
-    # Normalize columns
     if not df.empty:
-        # expected columns: Subject, SentimentDate, NormalizedSentimentScore
         if "SentimentDate" in df.columns:
             df["SentimentDate"] = pd.to_datetime(df["SentimentDate"], errors="coerce")
         elif "Date" in df.columns:
@@ -466,14 +456,12 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
             df["SentimentDate"] = pd.to_datetime(df["SentimentDate"], errors="coerce")
 
         if "Subject" in df.columns:
-            df = df[df["Subject"] == subject]
+            df = df[df["Subject"].astype(str) == str(subject)]
 
-        # filter by date window if we have a date column
         if "SentimentDate" in df.columns:
             mask = (df["SentimentDate"] >= start) & (df["SentimentDate"] <= end)
             df = df[mask]
 
-    fig = go.Figure()
     if not df.empty and {"SentimentDate", "NormalizedSentimentScore"}.issubset(df.columns):
         df = df.sort_values("SentimentDate")
         fig.add_trace(
@@ -481,7 +469,7 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
                 x=df["SentimentDate"],
                 y=df["NormalizedSentimentScore"],
                 mode="lines+markers",
-                name=subject,
+                name=str(subject),
             )
         )
         fig.update_layout(
@@ -499,7 +487,6 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
     return fig
 
 
-# Mentions chart
 @app.callback(
     Output("mentions-graph", "figure"),
     [
@@ -510,20 +497,22 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
     ],
 )
 def update_mentions_chart(subject, mode, custom_start, custom_end):
+    fig = go.Figure()
+    if not subject:
+        fig.update_layout(title="Select a subject to view data.", template="plotly_white")
+        return fig
+
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    # Try hitting API with params first
     df = fetch_df_with_params(MENTION_COUNT_URL, {
         "subject": subject,
         "start": start.strftime("%Y-%m-%d"),
         "end": end.strftime("%Y-%m-%d"),
     })
 
-    # If the API doesn't return dated data, try deriving from time series as a fallback
     if df.empty or "MentionCount" not in df.columns:
         ts = fetch_df(TIMESERIES_URL)
         if not ts.empty:
-            # attempt to compute counts from any available date column
             date_col = None
             for c in ["CreatedUTC", "MentionDate", "SentimentDate", "Date"]:
                 if c in ts.columns:
@@ -531,23 +520,17 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
                     break
             if date_col is not None:
                 ts[date_col] = pd.to_datetime(ts[date_col], errors="coerce")
-                sub = ts[(ts.get("Subject", pd.Series()).eq(subject)) & (ts[date_col].between(start, end))]
-                mention_count = len(sub)
+                sub = ts[(ts.get("Subject", pd.Series()).astype(str).eq(str(subject))) & (ts[date_col].between(start, end))]
+                mention_count = int(len(sub))
                 df = pd.DataFrame({"Subject": [subject], "MentionCount": [mention_count]})
 
-    # Build bar chart (single bar for the selected subject)
-    fig = go.Figure()
     if not df.empty and "MentionCount" in df.columns:
-        # If multiple subjects returned, filter to selected one
         if "Subject" in df.columns:
-            row = df[df["Subject"] == subject]
-            if not row.empty:
-                count = int(row.iloc[0]["MentionCount"])
-            else:
-                count = int(df["MentionCount"].iloc[0])
+            row = df[df["Subject"].astype(str) == str(subject)]
+            count = coerce_int(safe_first(row["MentionCount"], 0), default=0) if not row.empty else coerce_int(safe_first(df["MentionCount"], 0), default=0)
         else:
-            count = int(df["MentionCount"].iloc[0])
-        fig.add_trace(go.Bar(x=[subject], y=[count], name="Mentions"))
+            count = coerce_int(safe_first(df["MentionCount"], 0), default=0)
+        fig.add_trace(go.Bar(x=[str(subject)], y=[count], name="Mentions"))
         fig.update_layout(
             title=f"Mentions ({mode})",
             yaxis_title="Mentions",
@@ -559,7 +542,6 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
     return fig
 
 
-# Momentum chart
 @app.callback(
     Output("momentum-graph", "figure"),
     [
@@ -570,6 +552,11 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
     ],
 )
 def update_momentum_chart(subject, mode, custom_start, custom_end):
+    fig = go.Figure()
+    if not subject:
+        fig.update_layout(title="Select a subject to view data.", template="plotly_white")
+        return fig
+
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
     df = fetch_df_with_params(MOMENTUM_URL, {
@@ -581,12 +568,9 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
     if df.empty:
         df = fetch_df(MOMENTUM_URL)
 
-    # Normalize likely column names
     if not df.empty:
-        # Ensure subject filter
         if "Subject" in df.columns:
-            df = df[df["Subject"] == subject]
-        # Standardize date and value columns
+            df = df[df["Subject"].astype(str) == str(subject)]
         if "MomentumDate" not in df.columns:
             for c in ["ActivityDate", "Date"]:
                 if c in df.columns:
@@ -600,9 +584,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
         if "MomentumDate" in df.columns:
             df["MomentumDate"] = pd.to_datetime(df["MomentumDate"], errors="coerce")
             df = df.dropna(subset=["MomentumDate"])
-            # date range filter
             df = df[(df["MomentumDate"] >= start) & (df["MomentumDate"] <= end)]
-            # daily aggregate
             df = (
                 df.groupby(df["MomentumDate"].dt.date)
                 .agg({"Momentum": "mean"})
@@ -612,9 +594,8 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
             df["Date"] = pd.to_datetime(df["Date"])
             df = df.sort_values("Date")
 
-    fig = go.Figure()
     if not df.empty and {"Date", "Momentum"}.issubset(df.columns):
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["Momentum"], mode="lines+markers", name=subject))
+        fig.add_trace(go.Scatter(x=df["Date"], y=df["Momentum"], mode="lines+markers", name=str(subject)))
         fig.update_layout(
             title=f"Momentum = Mentions × Avg Sentiment ({mode})",
             xaxis_title="Date",
@@ -628,6 +609,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
