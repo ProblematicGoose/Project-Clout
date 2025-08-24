@@ -1,3 +1,4 @@
+import time
 import dash
 from dash import dcc, html, Input, Output
 import pandas as pd
@@ -25,32 +26,59 @@ app = dash.Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
 
 # -----------------------------
+# Lightweight in-memory TTL cache (speeds up subject switches)
+# -----------------------------
+_TTL_SECONDS = 90  # adjust if you want longer/shorter freshness
+_CACHE: dict[str, tuple[float, object]] = {}
+
+def _cache_get(key: str):
+    rec = _CACHE.get(key)
+    if not rec:
+        return None
+    ts, value = rec
+    if time.time() - ts < _TTL_SECONDS:
+        return value
+    return None
+
+def _cache_set(key: str, value: object):
+    _CACHE[key] = (time.time(), value)
+
+# -----------------------------
 # Helpers
 # -----------------------------
 
 def fetch_df(url: str, timeout: int = 15) -> pd.DataFrame:
+    cached = _cache_get(f"DF::{url}")
+    if isinstance(cached, pd.DataFrame):
+        return cached.copy()
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
-            return pd.DataFrame(json.load(r))
+            df = pd.DataFrame(json.load(r))
+            _cache_set(f"DF::{url}", df.copy())
+            return df
     except Exception:
         return pd.DataFrame()
 
 
 def fetch_json(url: str, timeout: int = 15) -> dict:
+    cached = _cache_get(f"JSON::{url}")
+    if isinstance(cached, dict):
+        # return a shallow copy
+        return json.loads(json.dumps(cached))
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
-            return json.load(r)
+            data = json.load(r)
+            _cache_set(f"JSON::{url}", json.loads(json.dumps(data)))
+            return data
     except Exception:
         return {}
 
 
 def fetch_df_with_params(base_url: str, params: dict) -> pd.DataFrame:
-    try:
-        query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-        url = f"{base_url}?{query}"
-        return fetch_df(url)
-    except Exception:
-        return fetch_df(base_url)
+    """Cached GET with query parameters."""
+    query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+    url = f"{base_url}?{query}" if query else base_url
+    return fetch_df(url)
 
 
 def start_of_today() -> datetime:
@@ -227,7 +255,7 @@ def render_dashboard(subject):
         dynamic_cards.append(html.Div("Choose a subject to begin.", className="dashboard-card"))
         return dynamic_cards + chart_cards()
 
-    # Scorecard
+    # Scorecard (cached)
     scorecard = fetch_df(SCORECARD_URL)
     photo = fetch_df(PHOTOS_URL)
     score, office, party, state, photo_url = 5000, "", "", "", None
@@ -264,7 +292,7 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits
+    # Traits (cached)
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
@@ -293,12 +321,11 @@ def render_dashboard(subject):
         )
     )
 
-    # Bill Sentiment
+    # Bill Sentiment (cached)
     bills = fetch_df(BILL_SENTIMENT_URL)
     if bills.empty:
         dynamic_cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
     else:
-        # normalize expected columns
         for col in ["BillName", "AverageSentimentScore", "SentimentLabel"]:
             if col not in bills.columns:
                 bills[col] = None
@@ -333,7 +360,7 @@ def render_dashboard(subject):
             )
         )
 
-    # Top Issues
+    # Top Issues (cached)
     issues = fetch_json(TOP_ISSUES_URL)
     if issues and all(k in issues for k in ("Liberal", "Conservative", "WeekStartDate")):
         week = issues["WeekStartDate"]
@@ -363,7 +390,7 @@ def render_dashboard(subject):
             )
         )
 
-    # Common Ground
+    # Common Ground (cached)
     common_df = fetch_df(COMMON_GROUND_URL)
     if not common_df.empty and "Subject" in common_df.columns:
         filtered = common_df[common_df["Subject"].astype(str) == str(subject)]
@@ -420,7 +447,7 @@ def toggle_momentum_custom(mode):
 
 
 # -----------------------------
-# Chart callbacks (subject + timeframe aware)
+# Chart callbacks (subject + timeframe aware, using cached base datasets)
 # -----------------------------
 @app.callback(
     Output("sentiment-graph", "figure"),
@@ -439,14 +466,9 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
 
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    df = fetch_df_with_params(TIMESERIES_URL, {
-        "subject": subject,
-        "start": start.strftime("%Y-%m-%d"),
-        "end": end.strftime("%Y-%m-%d"),
-    })
-
-    if df.empty:
-        df = fetch_df(TIMESERIES_URL)
+    # Fetch subject-wide data once; filter locally for speed
+    base_df = fetch_df_with_params(TIMESERIES_URL, {"subject": subject})
+    df = base_df.copy() if not base_df.empty else fetch_df(TIMESERIES_URL)
 
     if not df.empty:
         if "SentimentDate" in df.columns:
@@ -504,14 +526,10 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
 
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    df = fetch_df_with_params(MENTION_COUNT_URL, {
-        "subject": subject,
-        "start": start.strftime("%Y-%m-%d"),
-        "end": end.strftime("%Y-%m-%d"),
-    })
-
+    # Try mention counts endpoint (cached); if not present, derive from subject timeseries
+    df = fetch_df_with_params(MENTION_COUNT_URL, {"subject": subject})
     if df.empty or "MentionCount" not in df.columns:
-        ts = fetch_df(TIMESERIES_URL)
+        ts = fetch_df_with_params(TIMESERIES_URL, {"subject": subject})
         if not ts.empty:
             date_col = None
             for c in ["CreatedUTC", "MentionDate", "SentimentDate", "Date"]:
@@ -559,12 +577,8 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    df = fetch_df_with_params(MOMENTUM_URL, {
-        "subject": subject,
-        "start": start.strftime("%Y-%m-%d"),
-        "end": end.strftime("%Y-%m-%d"),
-    })
-
+    # Fetch per-subject momentum once; filter locally for speed
+    df = fetch_df_with_params(MOMENTUM_URL, {"subject": subject})
     if df.empty:
         df = fetch_df(MOMENTUM_URL)
 
@@ -609,6 +623,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
