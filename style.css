@@ -42,8 +42,8 @@ h1, h2, h3 {
 }
 
 .scorecard-img {
-  width: 100px;
-  height: 120px;
+  width: 200px;
+  height: 240px;
   border-radius: 8px;
   object-fit: cover;
 }
