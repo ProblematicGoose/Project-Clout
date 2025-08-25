@@ -392,23 +392,26 @@ def render_dashboard(subject):
         if not filtered.empty:
             dynamic_cards.append(
                 html.Div(
+    [
+        html.H2("Common Ground Issues", className="center-text"),
+        html.Ul(
+            [
+                html.Li(
                     [
-                        html.H2("Common Ground Issues", className="center-text"),
-                        html.Ul(
-                            [
-                                html.Li(
-                                    [
-                                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": "bold"}),
-                                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": "bold"}),
-                                        html.Span(r.get("Explanation", "")),
-                                    ]
-                                )
-                                for _, r in filtered.iterrows()
-                            ]
-                        ),
+                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": ""}),
+                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": ""}),
+                        html.Span(r.get("Explanation", ""))
                     ],
-                    className="dashboard-card",
+                    className="common-ground-item"
                 )
+                for _, r in filtered.iterrows()
+            ],
+            className="common-ground-list"
+        ),
+    ],
+    className="dashboard-card"
+)
+
             )
 
     return dynamic_cards + chart_cards()
