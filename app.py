@@ -281,12 +281,12 @@ def render_dashboard(subject):
                     if photo_url
                     else html.Div(style={"width": "100px", "height": "120px", "background": "#eee"})
                 ]),
-                html.Div([
-                    html.H1(subject),
-                    html.Div(f"{office} • {party} • {state}"),
-                    html.Div("Sentiment Score", className="section-header"),
-                    html.Div(f"{score:,}", style={"fontSize": "40px", "color": color, "fontWeight": "bold"}),
-                ], className="scorecard-metadata"),
+               html.Div([
+        html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
+        html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
+        html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
+        html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
+    ])
             ],
             className="dashboard-card scorecard-container",
         )
@@ -373,16 +373,11 @@ def render_dashboard(subject):
                     html.Div(
                         [
                             html.Div([
-                                html.H3("Conservative Topics", style={"color": "crimson"}),
-                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for t in conservative if t and 'Rank' in t and 'Topic' in t]),
-                            ], style={"width": "45%", "display": "inline-block"}),
-                            html.Div(
-                                [
-                                    html.H3("Liberal Topics", style={"color": "blue"}),
-                                    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}") for t in liberal if t and 'Rank' in t and 'Topic' in t]),
-                                ],
-                                style={"width": "45%", "display": "inline-block", "marginLeft": "5%"},
-                            ),
+    html.H3("Conservative Topics", style={'color': 'crimson'}),
+    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
+    html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
+    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
+])
                         ]
                     ),
                 ],
