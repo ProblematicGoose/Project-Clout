@@ -76,3 +76,11 @@ h1, h2, h3 {
 .center-text {
   text-align: center;
 }
+.common-ground-list {
+    font-size: 20px;
+    line-height: 1.6;
+}
+
+.common-ground-item {
+    margin-bottom: 6px;
+}
