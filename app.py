@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, date
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "https://58dc8b387f7b.ngrok-free.app"
+BASE_URL = "https://e9906d6117b7.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -258,7 +258,7 @@ def render_dashboard(subject):
     # Scorecard (cached)
     scorecard = fetch_df(SCORECARD_URL)
     photo = fetch_df(PHOTOS_URL)
-    score, office, party, state, photo_url = 5000, "", "", "", None
+    score, office, party, state, photo_url = 10000, "", "", "", None
     if not scorecard.empty and "Subject" in scorecard.columns:
         row = scorecard[scorecard["Subject"].astype(str) == str(subject)]
         if not row.empty and "NormalizedSentimentScore" in row.columns:
