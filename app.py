@@ -346,54 +346,28 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits (cached) — latest 5 per type using per-type max CreatedUTC
+    # Traits (cached) — strictly latest 5 per type by CreatedUTC (no batch grouping)
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
         tsub = traits[traits["Subject"].astype(str) == str(subject)].copy()
-        required_cols = {"TraitType", "TraitRank", "TraitDescription", "CreatedUTC"}
-        if not tsub.empty and required_cols.issubset(tsub.columns):
-            # Parse CreatedUTC exactly like "2025-09-01 06:32:19.497"
+        if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription", "CreatedUTC"}.issubset(tsub.columns):
+            # Parse timestamps like "2025-09-01 06:32:19.497"
             tsub["_CreatedDT"] = pd.to_datetime(tsub["CreatedUTC"], errors="coerce")
-            tsub = tsub.dropna(subset=["_CreatedDT"])  # only rows we can order
+            tsub = tsub.dropna(subset=["_CreatedDT"])  # keep only rows we can time-order
 
-            # --- Positive: pick ONLY rows whose CreatedUTC == max CreatedUTC among Positive ---
-            pos_df = tsub[tsub["TraitType"] == "Positive"].copy()
-            if not pos_df.empty:
-                pos_max = pos_df["_CreatedDT"].max()
-                pos_latest = pos_df[pos_df["_CreatedDT"] == pos_max].copy()
-                pos_list = (
-                    pos_latest
-                    .sort_values(["TraitRank", "_CreatedDT"], ascending=[True, False], kind="stable")
-                    .head(5)["TraitDescription"].dropna().tolist()
-                )
-
-            # --- Negative: pick ONLY rows whose CreatedUTC == max CreatedUTC among Negative ---
-            neg_df = tsub[tsub["TraitType"] == "Negative"].copy()
-            if not neg_df.empty:
-                neg_max = neg_df["_CreatedDT"].max()
-                neg_latest = neg_df[neg_df["_CreatedDT"] == neg_max].copy()
-                neg_list = (
-                    neg_latest
-                    .sort_values(["TraitRank", "_CreatedDT"], ascending=[True, False], kind="stable")
-                    .head(5)["TraitDescription"].dropna().tolist()
-                )
-
-        # Fallback if lists still empty for any reason
-        if not pos_list or not neg_list:
-            latest = latest_trait_batch(tsub)
-            if not pos_list:
-                pos_list = (
-                    latest[latest.get("TraitType").eq("Positive")]
-                    .sort_values("TraitRank", kind="stable")
-                    .head(5)["TraitDescription"].dropna().tolist()
-                ) if {"TraitType","TraitRank","TraitDescription"}.issubset(latest.columns) else []
-            if not neg_list:
-                neg_list = (
-                    latest[latest.get("TraitType").eq("Negative")]
-                    .sort_values("TraitRank", kind="stable")
-                    .head(5)["TraitDescription"].dropna().tolist()
-                ) if {"TraitType","TraitRank","TraitDescription"}.issubset(latest.columns) else []
+            # Positive: newest first, tie-break by lower TraitRank, then stable
+            pos_list = (
+                tsub[tsub["TraitType"] == "Positive"]
+                .sort_values(["_CreatedDT", "TraitRank"], ascending=[False, True], kind="stable")
+                .head(5)["TraitDescription"].dropna().tolist()
+            )
+            # Negative: newest first, tie-break by lower TraitRank, then stable
+            neg_list = (
+                tsub[tsub["TraitType"] == "Negative"]
+                .sort_values(["_CreatedDT", "TraitRank"], ascending=[False, True], kind="stable")
+                .head(5)["TraitDescription"].dropna().tolist()
+            )
 
     dynamic_cards.append(
         html.Div(
@@ -413,6 +387,7 @@ def render_dashboard(subject):
     )
 
     # Bill Sentiment (cached)
+
 
 
 
@@ -717,7 +692,6 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
-
 
 
 
