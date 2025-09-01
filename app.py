@@ -141,6 +141,40 @@ def safe_first(series, default=None):
         return default
 
 
+def latest_trait_batch(tsub: pd.DataFrame) -> pd.DataFrame:
+    """Return only the most recent batch of traits for a subject.
+    Prefers timestamp-like columns; falls back to numeric batch/id columns.
+    """
+    if tsub.empty:
+        return tsub
+
+    # Try likely timestamp columns (most to least specific)
+    time_cols = [
+        "BatchDate", "BatchTimestamp", "RunTimestamp",
+        "CreatedUTC", "UpdatedAt", "GeneratedAt", "InsertedAt",
+        "TraitDate", "Date",
+    ]
+    for c in time_cols:
+        if c in tsub.columns:
+            tmp = tsub.copy()
+            tmp[c] = pd.to_datetime(tmp[c], errors="coerce")
+            tmp = tmp.dropna(subset=[c])
+            if not tmp.empty:
+                latest_ts = tmp[c].max()
+                return tmp[tmp[c] == latest_ts]
+
+    # Try likely numeric batch/id columns
+    id_cols = ["BatchId", "TraitBatchId", "RunId"]
+    for c in id_cols:
+        if c in tsub.columns:
+            nums = pd.to_numeric(tsub[c], errors="coerce")
+            latest_id = nums.max()
+            return tsub[nums == latest_id]
+
+    # Fallback: nothing matched — return as-is
+    return tsub
+
+
 TIME_MODES = [
     {"label": "Today", "value": "Today"},
     {"label": "This Week", "value": "This Week"},
@@ -281,28 +315,33 @@ def render_dashboard(subject):
                     if photo_url
                     else html.Div(style={"width": "100px", "height": "120px", "background": "#eee"})
                 ]),
-               html.Div([
-        html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
-        html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
-        html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
-        html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
-    ])
+                html.Div([
+                    html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
+                    html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
+                    html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
+                    html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
+                ])
             ],
             className="dashboard-card scorecard-container",
         )
     )
 
-    # Traits (cached)
+    # Traits (cached) — show only the latest batch, trimmed to 5 per type
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
         tsub = traits[traits["Subject"].astype(str) == str(subject)]
         if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription"}.issubset(tsub.columns):
+            latest = latest_trait_batch(tsub)
             pos_list = (
-                tsub[tsub["TraitType"] == "Positive"].sort_values("TraitRank")["TraitDescription"].dropna().tolist()
+                latest[latest["TraitType"] == "Positive"]
+                .sort_values("TraitRank", kind="stable")
+                .head(5)["TraitDescription"].dropna().tolist()
             )
             neg_list = (
-                tsub[tsub["TraitType"] == "Negative"].sort_values("TraitRank")["TraitDescription"].dropna().tolist()
+                latest[latest["TraitType"] == "Negative"]
+                .sort_values("TraitRank", kind="stable")
+                .head(5)["TraitDescription"].dropna().tolist()
             )
     dynamic_cards.append(
         html.Div(
@@ -373,11 +412,11 @@ def render_dashboard(subject):
                     html.Div(
                         [
                             html.Div([
-    html.H3("Conservative Topics", style={'color': 'crimson'}),
-    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
-    html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
-    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
-])
+                                html.H3("Conservative Topics", style={'color': 'crimson'}),
+                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
+                                html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
+                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
+                            ])
                         ]
                     ),
                 ],
@@ -392,26 +431,25 @@ def render_dashboard(subject):
         if not filtered.empty:
             dynamic_cards.append(
                 html.Div(
-    [
-        html.H2("Common Ground Issues", className="center-text"),
-        html.Ul(
-            [
-                html.Li(
                     [
-                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": ""}),
-                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": ""}),
-                        html.Span(r.get("Explanation", ""))
+                        html.H2("Common Ground Issues", className="center-text"),
+                        html.Ul(
+                            [
+                                html.Li(
+                                    [
+                                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": ""}),
+                                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": ""}),
+                                        html.Span(r.get("Explanation", ""))
+                                    ],
+                                    className="common-ground-item"
+                                )
+                                for _, r in filtered.iterrows()
+                            ],
+                            className="common-ground-list"
+                        ),
                     ],
-                    className="common-ground-item"
+                    className="dashboard-card"
                 )
-                for _, r in filtered.iterrows()
-            ],
-            className="common-ground-list"
-        ),
-    ],
-    className="dashboard-card"
-)
-
             )
 
     return dynamic_cards + chart_cards()
@@ -621,6 +659,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
