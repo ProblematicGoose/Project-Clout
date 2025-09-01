@@ -346,28 +346,54 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits (cached) — strictly latest 5 per type by CreatedUTC (no batch grouping)
+    # Traits (cached) — robust: latest 5 per type by CreatedUTC (case-insensitive cols/values, safe fallbacks)
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
         tsub = traits[traits["Subject"].astype(str) == str(subject)].copy()
-        if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription", "CreatedUTC"}.issubset(tsub.columns):
-            # Parse timestamps like "2025-09-01 06:32:19.497"
-            tsub["_CreatedDT"] = pd.to_datetime(tsub["CreatedUTC"], errors="coerce")
-            tsub = tsub.dropna(subset=["_CreatedDT"])  # keep only rows we can time-order
+        if not tsub.empty:
+            # ---- Canonicalize column names (case-insensitive) ----
+            lower_map = {c.lower(): c for c in tsub.columns}
+            def col(*names):
+                for n in names:
+                    if n in lower_map:
+                        return lower_map[n]
+                return None
 
-            # Positive: newest first, tie-break by lower TraitRank, then stable
-            pos_list = (
-                tsub[tsub["TraitType"] == "Positive"]
-                .sort_values(["_CreatedDT", "TraitRank"], ascending=[False, True], kind="stable")
-                .head(5)["TraitDescription"].dropna().tolist()
-            )
-            # Negative: newest first, tie-break by lower TraitRank, then stable
-            neg_list = (
-                tsub[tsub["TraitType"] == "Negative"]
-                .sort_values(["_CreatedDT", "TraitRank"], ascending=[False, True], kind="stable")
-                .head(5)["TraitDescription"].dropna().tolist()
-            )
+            type_col = col("traittype", "type", "polarity")
+            desc_col = col("traitdescription", "description", "trait")
+            rank_col = col("traitrank", "rank", "order")
+            created_col = col("createdutc", "createdat", "created", "created_ts")
+
+            if type_col and desc_col:
+                # Normalize type labels to 'positive'/'negative'
+                tsub["_type"] = tsub[type_col].astype(str).str.strip().str.lower()
+                # Parse CreatedUTC if present
+                if created_col:
+                    tsub["_created"] = pd.to_datetime(tsub[created_col], errors="coerce")
+                else:
+                    tsub["_created"] = pd.NaT
+
+                # Build a sorter per type
+                def top5(d: pd.DataFrame, want: str) -> list:
+                    d = d[d["_type"].eq(want)].copy()
+                    if d.empty:
+                        return []
+                    # If we have any valid timestamps, prefer newest first
+                    if d["_created"].notna().any():
+                        sort_cols = ["_created"]
+                        ascending = [False]
+                        if rank_col and rank_col in d.columns:
+                            sort_cols.append(rank_col)
+                            ascending.append(True)
+                        d = d.sort_values(sort_cols, ascending=ascending, kind="stable")
+                    elif rank_col and rank_col in d.columns:
+                        d = d.sort_values(rank_col, kind="stable")
+                    # else: leave original order
+                    return d[desc_col].dropna().astype(str).head(5).tolist()
+
+                pos_list = top5(tsub, "positive")
+                neg_list = top5(tsub, "negative")
 
     dynamic_cards.append(
         html.Div(
@@ -387,6 +413,7 @@ def render_dashboard(subject):
     )
 
     # Bill Sentiment (cached)
+
 
 
 
