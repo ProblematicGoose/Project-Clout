@@ -346,9 +346,11 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits (cached) — robust: latest 5 per type by CreatedUTC (case-insensitive cols/values, safe fallbacks)
-    traits = fetch_df(TRAITS_URL)
+    # Traits (cached) — strictly latest 5 per type by CreatedUTC, with cache-bust + robust matching
+    # Bust cache every minute and pass subject hint (server may ignore extras but it's fine)
+    traits = fetch_df_with_params(TRAITS_URL, {"subject": subject, "_": int(time.time() // 60)})
     pos_list, neg_list = [], []
+    pos_dbg, neg_dbg = "", ""
     if not traits.empty and "Subject" in traits.columns:
         tsub = traits[traits["Subject"].astype(str) == str(subject)].copy()
         if not tsub.empty:
@@ -366,34 +368,43 @@ def render_dashboard(subject):
             created_col = col("createdutc", "createdat", "created", "created_ts")
 
             if type_col and desc_col:
-                # Normalize type labels to 'positive'/'negative'
-                tsub["_type"] = tsub[type_col].astype(str).str.strip().str.lower()
+                # Normalize type labels and be lenient (starts with pos/neg)
+                tsub["_type_raw"] = tsub[type_col].astype(str)
+                tsub["_type"] = tsub["_type_raw"].str.strip().str.lower()
+                tsub["_is_pos"] = tsub["_type"].str.startswith("pos")
+                tsub["_is_neg"] = tsub["_type"].str.startswith("neg")
+
                 # Parse CreatedUTC if present
                 if created_col:
                     tsub["_created"] = pd.to_datetime(tsub[created_col], errors="coerce")
                 else:
                     tsub["_created"] = pd.NaT
 
-                # Build a sorter per type
-                def top5(d: pd.DataFrame, want: str) -> list:
-                    d = d[d["_type"].eq(want)].copy()
-                    if d.empty:
-                        return []
-                    # If we have any valid timestamps, prefer newest first
-                    if d["_created"].notna().any():
-                        sort_cols = ["_created"]
-                        ascending = [False]
-                        if rank_col and rank_col in d.columns:
-                            sort_cols.append(rank_col)
-                            ascending.append(True)
-                        d = d.sort_values(sort_cols, ascending=ascending, kind="stable")
-                    elif rank_col and rank_col in d.columns:
-                        d = d.sort_values(rank_col, kind="stable")
-                    # else: leave original order
-                    return d[desc_col].dropna().astype(str).head(5).tolist()
+                # Cast rank to numeric if it exists
+                if rank_col and rank_col in tsub.columns:
+                    tsub["_rank"] = pd.to_numeric(tsub[rank_col], errors="coerce")
+                else:
+                    tsub["_rank"] = pd.NA
 
-                pos_list = top5(tsub, "positive")
-                neg_list = top5(tsub, "negative")
+                # Positive: newest first, tie-break by lower rank
+                pos_df = tsub[tsub["_is_pos"]].copy()
+                if not pos_df.empty:
+                    if pos_df["_created"].notna().any():
+                        pos_df = pos_df.sort_values(["_created", "_rank"], ascending=[False, True], kind="stable")
+                    elif pos_df["_rank"].notna().any():
+                        pos_df = pos_df.sort_values(["_rank"], kind="stable")
+                    pos_list = pos_df[desc_col].dropna().astype(str).head(5).tolist()
+                    pos_dbg = f"pos_max={pos_df['_created'].max()} total={len(pos_df)} showing={len(pos_list)}"
+
+                # Negative: newest first, tie-break by lower rank
+                neg_df = tsub[tsub["_is_neg"]].copy()
+                if not neg_df.empty:
+                    if neg_df["_created"].notna().any():
+                        neg_df = neg_df.sort_values(["_created", "_rank"], ascending=[False, True], kind="stable")
+                    elif neg_df["_rank"].notna().any():
+                        neg_df = neg_df.sort_values(["_rank"], kind="stable")
+                    neg_list = neg_df[desc_col].dropna().astype(str).head(5).tolist()
+                    neg_dbg = f"neg_max={neg_df['_created'].max()} total={len(neg_df)} showing={len(neg_list)}"
 
     dynamic_cards.append(
         html.Div(
@@ -402,10 +413,12 @@ def render_dashboard(subject):
                 html.Div([
                     html.H3("People like it when I...", style={"color": "green"}),
                     html.Ul([html.Li(p) for p in pos_list]) if pos_list else html.Div("No positive traits found."),
+                    html.Div(pos_dbg, style={"color": "#999", "fontSize": "12px", "marginTop": "6px"}),
                 ], style={"marginBottom": "20px"}),
                 html.Div([
                     html.H3("People don't like it when I...", style={"color": "crimson"}),
                     html.Ul([html.Li(n) for n in neg_list]) if neg_list else html.Div("No negative traits found."),
+                    html.Div(neg_dbg, style={"color": "#999", "fontSize": "12px", "marginTop": "6px"}),
                 ]),
             ],
             className="dashboard-card",
@@ -413,6 +426,7 @@ def render_dashboard(subject):
     )
 
     # Bill Sentiment (cached)
+
 
 
 
@@ -719,7 +733,6 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
-
 
 
 
