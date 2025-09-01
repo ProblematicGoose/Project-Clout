@@ -326,23 +326,42 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits (cached) — show only the latest batch, trimmed to 5 per type
+    # Traits (cached) — show only the latest 5 per type by CreatedUTC if available
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
         tsub = traits[traits["Subject"].astype(str) == str(subject)]
         if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription"}.issubset(tsub.columns):
-            latest = latest_trait_batch(tsub)
-            pos_list = (
-                latest[latest["TraitType"] == "Positive"]
-                .sort_values("TraitRank", kind="stable")
-                .head(5)["TraitDescription"].dropna().tolist()
-            )
-            neg_list = (
-                latest[latest["TraitType"] == "Negative"]
-                .sort_values("TraitRank", kind="stable")
-                .head(5)["TraitDescription"].dropna().tolist()
-            )
+            if "CreatedUTC" in tsub.columns:
+                # Prefer strict recency by CreatedUTC
+                tsub["CreatedUTC"] = pd.to_datetime(tsub["CreatedUTC"], errors="coerce")
+                # Positive
+                pos_latest = (
+                    tsub[(tsub["TraitType"] == "Positive") & tsub["CreatedUTC"].notna()]
+                    .sort_values(["CreatedUTC", "TraitRank"], ascending=[False, True], kind="stable")
+                    .head(5)
+                )
+                pos_list = pos_latest["TraitDescription"].dropna().tolist()
+                # Negative
+                neg_latest = (
+                    tsub[(tsub["TraitType"] == "Negative") & tsub["CreatedUTC"].notna()]
+                    .sort_values(["CreatedUTC", "TraitRank"], ascending=[False, True], kind="stable")
+                    .head(5)
+                )
+                neg_list = neg_latest["TraitDescription"].dropna().tolist()
+            else:
+                # Fallback: use most recent batch if timestamps aren't present
+                latest = latest_trait_batch(tsub)
+                pos_list = (
+                    latest[latest["TraitType"] == "Positive"]
+                    .sort_values("TraitRank", kind="stable")
+                    .head(5)["TraitDescription"].dropna().tolist()
+                )
+                neg_list = (
+                    latest[latest["TraitType"] == "Negative"]
+                    .sort_values("TraitRank", kind="stable")
+                    .head(5)["TraitDescription"].dropna().tolist()
+                )
     dynamic_cards.append(
         html.Div(
             [
@@ -361,6 +380,7 @@ def render_dashboard(subject):
     )
 
     # Bill Sentiment (cached)
+
     bills = fetch_df(BILL_SENTIMENT_URL)
     if bills.empty:
         dynamic_cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
@@ -659,6 +679,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
