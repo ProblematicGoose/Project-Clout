@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, date
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "https://e0dd0a6b61e8.ngrok-free.app"
+BASE_URL = "https://3735c7473093.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -139,60 +139,6 @@ def safe_first(series, default=None):
         return v
     except Exception:
         return default
-
-
-def _parse_created_utc(s: pd.Series) -> pd.Series:
-    """Robustly parse CreatedUTC that may be ISO8601 strings, pandas Timestamps,
-    or epoch seconds/milliseconds (ints/strings). Returns pandas datetime (UTC)."""
-    if s is None or len(s) == 0:
-        return pd.to_datetime(pd.Series([], dtype="datetime64[ns]"))
-    # If numeric-like, try epoch (seconds or ms)
-    try:
-        sn = pd.to_numeric(s, errors="coerce")
-        if sn.notna().any():
-            # Heuristic: >= 10^12 -> milliseconds, else seconds
-            unit = "ms" if float(sn.max()) >= 1e12 else "s"
-            dt = pd.to_datetime(sn, unit=unit, utc=True, errors="coerce")
-            if dt.notna().any():
-                return dt
-    except Exception:
-        pass
-    # Fallback: parse as strings/ISO8601
-    return pd.to_datetime(s, utc=True, errors="coerce")
-
-
-def latest_trait_batch(tsub: pd.DataFrame) -> pd.DataFrame:
-    """Return only the most recent batch of traits for a subject.
-    Prefers timestamp-like columns; falls back to numeric batch/id columns.
-    """
-    if tsub.empty:
-        return tsub
-
-    # Try likely timestamp columns (most to least specific)
-    time_cols = [
-        "BatchDate", "BatchTimestamp", "RunTimestamp",
-        "CreatedUTC", "UpdatedAt", "GeneratedAt", "InsertedAt",
-        "TraitDate", "Date",
-    ]
-    for c in time_cols:
-        if c in tsub.columns:
-            tmp = tsub.copy()
-            tmp[c] = pd.to_datetime(tmp[c], errors="coerce")
-            tmp = tmp.dropna(subset=[c])
-            if not tmp.empty:
-                latest_ts = tmp[c].max()
-                return tmp[tmp[c] == latest_ts]
-
-    # Try likely numeric batch/id columns
-    id_cols = ["BatchId", "TraitBatchId", "RunId"]
-    for c in id_cols:
-        if c in tsub.columns:
-            nums = pd.to_numeric(tsub[c], errors="coerce")
-            latest_id = nums.max()
-            return tsub[nums == latest_id]
-
-    # Fallback: nothing matched — return as-is
-    return tsub
 
 
 TIME_MODES = [
@@ -335,76 +281,43 @@ def render_dashboard(subject):
                     if photo_url
                     else html.Div(style={"width": "100px", "height": "120px", "background": "#eee"})
                 ]),
-                html.Div([
-                    html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
-                    html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
-                    html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
-                    html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
-                ])
+               html.Div([
+        html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
+        html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
+        html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
+        html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
+    ])
             ],
             className="dashboard-card scorecard-container",
         )
     )
 
-    # Traits (cached) — strictly latest 5 per type by CreatedUTC, with cache-bust + robust matching
-    # Bust cache every minute and pass subject hint (server may ignore extras but it's fine)
-    traits = fetch_df_with_params(TRAITS_URL, {"subject": subject, "_": int(time.time() // 60)})
+    # Traits (cached)
+            # Traits (cached) — newest 5 Positive and 5 Negative by CreatedUTC
+    traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
-    pos_dbg, neg_dbg = "", ""
-    if not traits.empty and "Subject" in traits.columns:
-        tsub = traits[traits["Subject"].astype(str) == str(subject)].copy()
+    if not traits.empty and "Subject" in traits.columns and "CreatedUTC" in traits.columns:
+        subj_norm = str(subject).strip().casefold()
+        subj_col = traits["Subject"].astype(str).str.strip().str.casefold()
+        tsub = traits[subj_col == subj_norm].copy()
+
         if not tsub.empty:
-            # ---- Canonicalize column names (case-insensitive) ----
-            lower_map = {c.lower(): c for c in tsub.columns}
-            def col(*names):
-                for n in names:
-                    if n in lower_map:
-                        return lower_map[n]
-                return None
+            # Parse timestamps
+            raw = tsub["CreatedUTC"].astype(str).str.strip()
+            s = raw.str.replace("T", " ", regex=False).str.replace("Z", "", regex=False)
+            s = s.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)  # trim >6 microseconds
+            tsub["CreatedUTC_parsed"] = pd.to_datetime(s, errors="coerce")
 
-            type_col = col("traittype", "type", "polarity")
-            desc_col = col("traitdescription", "description", "trait")
-            rank_col = col("traitrank", "rank", "order")
-            created_col = col("createdutc", "createdat", "created", "created_ts")
+            def newest5(df: pd.DataFrame, kind: str) -> list[str]:
+                kk = df[df["TraitType"].astype(str).str.strip().str.casefold().eq(kind.casefold())].copy()
+                kk = kk[kk["CreatedUTC_parsed"].notna()]
+                if kk.empty:
+                    return []
+                kk = kk.sort_values("CreatedUTC_parsed", ascending=False).head(5)
+                return kk["TraitDescription"].dropna().astype(str).tolist()
 
-            if type_col and desc_col:
-                # Normalize type labels and be lenient (starts with pos/neg)
-                tsub["_type_raw"] = tsub[type_col].astype(str)
-                tsub["_type"] = tsub["_type_raw"].str.strip().str.lower()
-                tsub["_is_pos"] = tsub["_type"].str.startswith("pos")
-                tsub["_is_neg"] = tsub["_type"].str.startswith("neg")
-
-                # Parse CreatedUTC if present
-                if created_col:
-                    tsub["_created"] = pd.to_datetime(tsub[created_col], errors="coerce")
-                else:
-                    tsub["_created"] = pd.NaT
-
-                # Cast rank to numeric if it exists
-                if rank_col and rank_col in tsub.columns:
-                    tsub["_rank"] = pd.to_numeric(tsub[rank_col], errors="coerce")
-                else:
-                    tsub["_rank"] = pd.NA
-
-                # Positive: newest first, tie-break by lower rank
-                pos_df = tsub[tsub["_is_pos"]].copy()
-                if not pos_df.empty:
-                    if pos_df["_created"].notna().any():
-                        pos_df = pos_df.sort_values(["_created", "_rank"], ascending=[False, True], kind="stable")
-                    elif pos_df["_rank"].notna().any():
-                        pos_df = pos_df.sort_values(["_rank"], kind="stable")
-                    pos_list = pos_df[desc_col].dropna().astype(str).head(5).tolist()
-                    pos_dbg = f"pos_max={pos_df['_created'].max()} total={len(pos_df)} showing={len(pos_list)}"
-
-                # Negative: newest first, tie-break by lower rank
-                neg_df = tsub[tsub["_is_neg"]].copy()
-                if not neg_df.empty:
-                    if neg_df["_created"].notna().any():
-                        neg_df = neg_df.sort_values(["_created", "_rank"], ascending=[False, True], kind="stable")
-                    elif neg_df["_rank"].notna().any():
-                        neg_df = neg_df.sort_values(["_rank"], kind="stable")
-                    neg_list = neg_df[desc_col].dropna().astype(str).head(5).tolist()
-                    neg_dbg = f"neg_max={neg_df['_created'].max()} total={len(neg_df)} showing={len(neg_list)}"
+            pos_list = newest5(tsub, "Positive")
+            neg_list = newest5(tsub, "Negative")
 
     dynamic_cards.append(
         html.Div(
@@ -412,29 +325,19 @@ def render_dashboard(subject):
                 html.H2("Behavioral Traits", className="center-text"),
                 html.Div([
                     html.H3("People like it when I...", style={"color": "green"}),
-                    html.Ul([html.Li(p) for p in pos_list]) if pos_list else html.Div("No positive traits found."),
-                    html.Div(pos_dbg, style={"color": "#999", "fontSize": "12px", "marginTop": "6px"}),
+                    html.Ul([html.Li(p) for p in pos_list]) if pos_list else html.Div("No recent positive traits."),
                 ], style={"marginBottom": "20px"}),
                 html.Div([
                     html.H3("People don't like it when I...", style={"color": "crimson"}),
-                    html.Ul([html.Li(n) for n in neg_list]) if neg_list else html.Div("No negative traits found."),
-                    html.Div(neg_dbg, style={"color": "#999", "fontSize": "12px", "marginTop": "6px"}),
+                    html.Ul([html.Li(n) for n in neg_list]) if neg_list else html.Div("No recent negative traits."),
                 ]),
             ],
             className="dashboard-card",
         )
     )
 
+
     # Bill Sentiment (cached)
-
-
-
-
-
-
-
-
-
     bills = fetch_df(BILL_SENTIMENT_URL)
     if bills.empty:
         dynamic_cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
@@ -486,11 +389,11 @@ def render_dashboard(subject):
                     html.Div(
                         [
                             html.Div([
-                                html.H3("Conservative Topics", style={'color': 'crimson'}),
-                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
-                                html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
-                                html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
-                            ])
+    html.H3("Conservative Topics", style={'color': 'crimson'}),
+    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
+    html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
+    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
+])
                         ]
                     ),
                 ],
@@ -505,25 +408,26 @@ def render_dashboard(subject):
         if not filtered.empty:
             dynamic_cards.append(
                 html.Div(
+    [
+        html.H2("Common Ground Issues", className="center-text"),
+        html.Ul(
+            [
+                html.Li(
                     [
-                        html.H2("Common Ground Issues", className="center-text"),
-                        html.Ul(
-                            [
-                                html.Li(
-                                    [
-                                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": ""}),
-                                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": ""}),
-                                        html.Span(r.get("Explanation", ""))
-                                    ],
-                                    className="common-ground-item"
-                                )
-                                for _, r in filtered.iterrows()
-                            ],
-                            className="common-ground-list"
-                        ),
+                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": ""}),
+                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": ""}),
+                        html.Span(r.get("Explanation", ""))
                     ],
-                    className="dashboard-card"
+                    className="common-ground-item"
                 )
+                for _, r in filtered.iterrows()
+            ],
+            className="common-ground-list"
+        ),
+    ],
+    className="dashboard-card"
+)
+
             )
 
     return dynamic_cards + chart_cards()
@@ -733,6 +637,69 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
