@@ -346,41 +346,33 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits (cached) — choose the newest batch by CreatedUTC (robust parsing)
+    # Traits (cached) — strictly use latest CreatedUTC timestamp for this subject
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
-        tsub = traits[traits["Subject"].astype(str) == str(subject)]
-        if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription"}.issubset(tsub.columns):
+        tsub = traits[traits["Subject"].astype(str) == str(subject)].copy()
+        required_cols = {"TraitType", "TraitRank", "TraitDescription"}
+        if not tsub.empty and required_cols.issubset(tsub.columns):
             if "CreatedUTC" in tsub.columns:
-                # Robust parse of CreatedUTC (supports ISO8601 and epoch seconds/ms)
-                created = _parse_created_utc(tsub["CreatedUTC"])  # returns UTC-aware datetimes
-                tsub = tsub.assign(_CreatedDT=created)
-                # Drop rows we can't time-order
-                tsub = tsub[tsub["_CreatedDT"].notna()].copy()
+                # Parse naive timestamps like "2025-09-01 06:32:19.497"
+                tsub["_CreatedDT"] = pd.to_datetime(tsub["CreatedUTC"], errors="coerce")
+                tsub = tsub.dropna(subset=["_CreatedDT"])  # drop unparsable
                 if not tsub.empty:
                     latest_ts = tsub["_CreatedDT"].max()
-                    # Keep only rows from the latest timestamp window. If batch inserts vary by a few seconds,
-                    # include anything within the same minute as the latest row.
-                    window_start = latest_ts.floor("T")
-                    window_end = window_start + pd.Timedelta(minutes=1)
-                    latest = tsub[(tsub["_CreatedDT"] >= window_start) & (tsub["_CreatedDT"] < window_end)].copy()
-                    if latest.empty:
-                        latest = tsub[tsub["_CreatedDT"] == latest_ts].copy()
+                    latest_rows = tsub[tsub["_CreatedDT"] == latest_ts].copy()
 
-                    # Now select top 5 by TraitRank within that latest window
                     pos_list = (
-                        latest[latest["TraitType"] == "Positive"]
-                        .sort_values(["TraitRank", "_CreatedDT"], ascending=[True, False], kind="stable")
+                        latest_rows[latest_rows["TraitType"] == "Positive"]
+                        .sort_values(["TraitRank"], ascending=[True], kind="stable")
                         .head(5)["TraitDescription"].dropna().tolist()
                     )
                     neg_list = (
-                        latest[latest["TraitType"] == "Negative"]
-                        .sort_values(["TraitRank", "_CreatedDT"], ascending=[True, False], kind="stable")
+                        latest_rows[latest_rows["TraitType"] == "Negative"]
+                        .sort_values(["TraitRank"], ascending=[True], kind="stable")
                         .head(5)["TraitDescription"].dropna().tolist()
                     )
             if not pos_list and not neg_list:
-                # Fallback: use most recent batch via other columns if CreatedUTC missing/unparseable
+                # Fallback: if CreatedUTC missing/unparseable, fall back to previous batch logic
                 latest = latest_trait_batch(tsub)
                 pos_list = (
                     latest[latest["TraitType"] == "Positive"]
@@ -410,6 +402,8 @@ def render_dashboard(subject):
     )
 
     # Bill Sentiment (cached)
+
+
 
 
 
@@ -711,8 +705,6 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
-
-
 
 
 
