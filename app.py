@@ -141,6 +141,26 @@ def safe_first(series, default=None):
         return default
 
 
+def _parse_created_utc(s: pd.Series) -> pd.Series:
+    """Robustly parse CreatedUTC that may be ISO8601 strings, pandas Timestamps,
+    or epoch seconds/milliseconds (ints/strings). Returns pandas datetime (UTC)."""
+    if s is None or len(s) == 0:
+        return pd.to_datetime(pd.Series([], dtype="datetime64[ns]"))
+    # If numeric-like, try epoch (seconds or ms)
+    try:
+        sn = pd.to_numeric(s, errors="coerce")
+        if sn.notna().any():
+            # Heuristic: >= 10^12 -> milliseconds, else seconds
+            unit = "ms" if float(sn.max()) >= 1e12 else "s"
+            dt = pd.to_datetime(sn, unit=unit, utc=True, errors="coerce")
+            if dt.notna().any():
+                return dt
+    except Exception:
+        pass
+    # Fallback: parse as strings/ISO8601
+    return pd.to_datetime(s, utc=True, errors="coerce")
+
+
 def latest_trait_batch(tsub: pd.DataFrame) -> pd.DataFrame:
     """Return only the most recent batch of traits for a subject.
     Prefers timestamp-like columns; falls back to numeric batch/id columns.
@@ -326,31 +346,41 @@ def render_dashboard(subject):
         )
     )
 
-    # Traits (cached) — show only the latest 5 per type by CreatedUTC if available
+    # Traits (cached) — choose the newest batch by CreatedUTC (robust parsing)
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns:
         tsub = traits[traits["Subject"].astype(str) == str(subject)]
         if not tsub.empty and {"TraitType", "TraitRank", "TraitDescription"}.issubset(tsub.columns):
             if "CreatedUTC" in tsub.columns:
-                # Prefer strict recency by CreatedUTC
-                tsub["CreatedUTC"] = pd.to_datetime(tsub["CreatedUTC"], errors="coerce")
-                # Positive
-                pos_latest = (
-                    tsub[(tsub["TraitType"] == "Positive") & tsub["CreatedUTC"].notna()]
-                    .sort_values(["CreatedUTC", "TraitRank"], ascending=[False, True], kind="stable")
-                    .head(5)
-                )
-                pos_list = pos_latest["TraitDescription"].dropna().tolist()
-                # Negative
-                neg_latest = (
-                    tsub[(tsub["TraitType"] == "Negative") & tsub["CreatedUTC"].notna()]
-                    .sort_values(["CreatedUTC", "TraitRank"], ascending=[False, True], kind="stable")
-                    .head(5)
-                )
-                neg_list = neg_latest["TraitDescription"].dropna().tolist()
-            else:
-                # Fallback: use most recent batch if timestamps aren't present
+                # Robust parse of CreatedUTC (supports ISO8601 and epoch seconds/ms)
+                created = _parse_created_utc(tsub["CreatedUTC"])  # returns UTC-aware datetimes
+                tsub = tsub.assign(_CreatedDT=created)
+                # Drop rows we can't time-order
+                tsub = tsub[tsub["_CreatedDT"].notna()].copy()
+                if not tsub.empty:
+                    latest_ts = tsub["_CreatedDT"].max()
+                    # Keep only rows from the latest timestamp window. If batch inserts vary by a few seconds,
+                    # include anything within the same minute as the latest row.
+                    window_start = latest_ts.floor("T")
+                    window_end = window_start + pd.Timedelta(minutes=1)
+                    latest = tsub[(tsub["_CreatedDT"] >= window_start) & (tsub["_CreatedDT"] < window_end)].copy()
+                    if latest.empty:
+                        latest = tsub[tsub["_CreatedDT"] == latest_ts].copy()
+
+                    # Now select top 5 by TraitRank within that latest window
+                    pos_list = (
+                        latest[latest["TraitType"] == "Positive"]
+                        .sort_values(["TraitRank", "_CreatedDT"], ascending=[True, False], kind="stable")
+                        .head(5)["TraitDescription"].dropna().tolist()
+                    )
+                    neg_list = (
+                        latest[latest["TraitType"] == "Negative"]
+                        .sort_values(["TraitRank", "_CreatedDT"], ascending=[True, False], kind="stable")
+                        .head(5)["TraitDescription"].dropna().tolist()
+                    )
+            if not pos_list and not neg_list:
+                # Fallback: use most recent batch via other columns if CreatedUTC missing/unparseable
                 latest = latest_trait_batch(tsub)
                 pos_list = (
                     latest[latest["TraitType"] == "Positive"]
@@ -380,6 +410,8 @@ def render_dashboard(subject):
     )
 
     # Bill Sentiment (cached)
+
+
 
     bills = fetch_df(BILL_SENTIMENT_URL)
     if bills.empty:
@@ -679,6 +711,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
