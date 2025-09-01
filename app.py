@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, date
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "https://b4da0f79bc65.ngrok-free.app"
+BASE_URL = "https://e0dd0a6b61e8.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
