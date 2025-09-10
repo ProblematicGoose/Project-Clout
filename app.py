@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, date
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "https://58d3a9f93a0e.ngrok-free.app"
+BASE_URL = "https://14923c3ca1b2.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -21,6 +21,10 @@ TOP_ISSUES_URL = f"{BASE_URL}/api/top-issues"
 COMMON_GROUND_URL = f"{BASE_URL}/api/common-ground-issues"
 MENTION_COUNT_URL = f"{BASE_URL}/api/mention-counts"
 MOMENTUM_URL = f"{BASE_URL}/api/momentum"
+MENTION_COUNTS_DAILY_URL = f"{BASE_URL}/api/mention-counts-daily"
+LATEST_COMMENTS_URL = f"{BASE_URL}/api/latest-comments"  # NEW
+
+
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
@@ -47,38 +51,62 @@ def _cache_set(key: str, value: object):
 # Helpers
 # -----------------------------
 
-def fetch_df(url: str, timeout: int = 15) -> pd.DataFrame:
-    cached = _cache_get(f"DF::{url}")
+# -----------------------------
+# Helpers (resilient caching)
+# -----------------------------
+
+def fetch_df(url: str, timeout: int = 6) -> pd.DataFrame:
+    """
+    Fetch JSON -> DataFrame with TTL caching.
+    On network error/timeout, return STALE cached value if present (even if expired).
+    """
+    fresh_key = f"DF::{url}"
+    cached = _cache_get(fresh_key)
     if isinstance(cached, pd.DataFrame):
         return cached.copy()
+
+    # Also keep a pointer to the stale value (if any)
+    stale = _CACHE.get(fresh_key)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             df = pd.DataFrame(json.load(r))
-            _cache_set(f"DF::{url}", df.copy())
+            _cache_set(fresh_key, df.copy())
             return df
     except Exception:
+        # Fallback to stale cache even if expired
+        if isinstance(stale, tuple) and isinstance(stale[1], pd.DataFrame):
+            return stale[1].copy()
         return pd.DataFrame()
 
 
-def fetch_json(url: str, timeout: int = 15) -> dict:
-    cached = _cache_get(f"JSON::{url}")
+def fetch_json(url: str, timeout: int = 6) -> dict:
+    """
+    Fetch JSON dict with TTL caching.
+    On error/timeout, return STALE cached value if present (even if expired).
+    """
+    fresh_key = f"JSON::{url}"
+    cached = _cache_get(fresh_key)
     if isinstance(cached, dict):
-        # return a shallow copy
         return json.loads(json.dumps(cached))
+
+    stale = _CACHE.get(fresh_key)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             data = json.load(r)
-            _cache_set(f"JSON::{url}", json.loads(json.dumps(data)))
+            _cache_set(fresh_key, json.loads(json.dumps(data)))
             return data
     except Exception:
+        if isinstance(stale, tuple) and isinstance(stale[1], dict):
+            return json.loads(json.dumps(stale[1]))
         return {}
 
 
-def fetch_df_with_params(base_url: str, params: dict) -> pd.DataFrame:
-    """Cached GET with query parameters."""
+def fetch_df_with_params(base_url: str, params: dict, timeout: int = 6) -> pd.DataFrame:
+    """Cached GET with query parameters and timeout control."""
     query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     url = f"{base_url}?{query}" if query else base_url
-    return fetch_df(url)
+    return fetch_df(url, timeout=timeout)
+
 
 
 def start_of_today() -> datetime:
@@ -240,7 +268,79 @@ def chart_cards():
         ], className="dashboard-card"),
     ]
 
+def latest_comments_card(subject: str | None):
+    """
+    Big table at the bottom showing newest 10 total comments across Reddit + Bluesky.
+    This version is non-blocking: on error/timeout, it shows cached or a friendly placeholder.
+    """
+    params = {"limit": 10}
+    if subject:
+        params["subject"] = subject
 
+    # Use a shorter timeout just for this hit so it can't stall the whole dashboard render.
+    df = fetch_df_with_params(LATEST_COMMENTS_URL, params, timeout=4)
+
+    # Ensure columns
+    for col in ["Source", "Comment", "Timestamp", "URL"]:
+        if col not in df.columns:
+            df[col] = None
+
+    # Build table rows
+    rows = []
+    for _, r in df.iterrows():
+        src = (r.get("Source") or "")
+        cmt = (r.get("Comment") or "")
+        ts  = (r.get("Timestamp") or "")
+        url = (r.get("URL") or "")
+        link = html.A("link", href=url, target="_blank") if isinstance(url, str) and url.strip() else ""
+        rows.append(
+            html.Tr([
+                html.Td(src, style={"width": "8%", "verticalAlign": "top"}),
+                html.Td(cmt, style={"verticalAlign": "top", "whiteSpace": "normal"}),
+                html.Td(ts,  style={"width": "14%", "verticalAlign": "top"}),
+                html.Td(link, style={"width": "8%", "verticalAlign": "top"}),
+            ])
+        )
+
+    # Friendly placeholder if empty after timeout/error
+    if not rows:
+        rows = [html.Tr([html.Td("No recent comments available.", colSpan=4)])]
+
+    return html.Div(
+        [
+            html.H2("Latest Comments", className="center-text"),
+            html.Div(
+                html.Table(
+                    [
+                        html.Thead(
+                            html.Tr([
+                                html.Th("Source"),
+                                html.Th("Comment"),
+                                html.Th("Timestamp"),
+                                html.Th("URL"),
+                            ])
+                        ),
+                        html.Tbody(rows),
+                    ],
+                    style={"width": "100%"},
+                ),
+                style={
+                    "maxHeight": "460px",
+                    "overflowY": "auto",
+                    "border": "1px solid #ddd",
+                    "padding": "6px",
+                },
+            ),
+        ],
+        className="dashboard-card",
+        style={"gridColumn": "1 / -1", "fontSize": "16px"},
+    )
+
+
+
+# -----------------------------
+# Dashboard builder: dynamic cards + fixed chart cards
+# -----------------------------
 # -----------------------------
 # Dashboard builder: dynamic cards + fixed chart cards
 # -----------------------------
@@ -253,7 +353,8 @@ def render_dashboard(subject):
 
     if not subject:
         dynamic_cards.append(html.Div("Choose a subject to begin.", className="dashboard-card"))
-        return dynamic_cards + chart_cards()
+        # Append the latest-comments table without a subject filter
+        return dynamic_cards + chart_cards() + [latest_comments_card(None)]
 
     # Scorecard (cached)
     scorecard = fetch_df(SCORECARD_URL)
@@ -281,41 +382,33 @@ def render_dashboard(subject):
                     if photo_url
                     else html.Div(style={"width": "100px", "height": "120px", "background": "#eee"})
                 ]),
-               html.Div([
-        html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
-        html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
-        html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
-        html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
-    ])
+                html.Div([
+                    html.H1(subject, style={"fontSize": "30px", "marginBottom": "5px"}),
+                    html.Div(f"{office} • {party} • {state}", style={"fontSize": "16px", "color": "#666"}),
+                    html.Div("Sentiment Score", style={"marginTop": "10px", "fontSize": "14px", "color": "#999"}),
+                    html.Div(f"{score:,}", style={"fontSize": "60px", "color": color, "fontWeight": "bold"})
+                ])
             ],
             className="dashboard-card scorecard-container",
         )
     )
 
-    # Traits (cached)
-            # Traits (cached) — newest 5 Positive and 5 Negative by CreatedUTC
+    # Traits (cached) — newest 5 Positive and 5 Negative
     traits = fetch_df(TRAITS_URL)
     pos_list, neg_list = [], []
     if not traits.empty and "Subject" in traits.columns and "CreatedUTC" in traits.columns:
         subj_norm = str(subject).strip().casefold()
         subj_col = traits["Subject"].astype(str).str.strip().str.casefold()
         tsub = traits[subj_col == subj_norm].copy()
-
         if not tsub.empty:
-            # Parse timestamps
             raw = tsub["CreatedUTC"].astype(str).str.strip()
             s = raw.str.replace("T", " ", regex=False).str.replace("Z", "", regex=False)
-            s = s.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)  # trim >6 microseconds
+            s = s.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)
             tsub["CreatedUTC_parsed"] = pd.to_datetime(s, errors="coerce")
-
-            def newest5(df: pd.DataFrame, kind: str) -> list[str]:
+            def newest5(df, kind):
                 kk = df[df["TraitType"].astype(str).str.strip().str.casefold().eq(kind.casefold())].copy()
-                kk = kk[kk["CreatedUTC_parsed"].notna()]
-                if kk.empty:
-                    return []
-                kk = kk.sort_values("CreatedUTC_parsed", ascending=False).head(5)
+                kk = kk[kk["CreatedUTC_parsed"].notna()].sort_values("CreatedUTC_parsed", ascending=False).head(5)
                 return kk["TraitDescription"].dropna().astype(str).tolist()
-
             pos_list = newest5(tsub, "Positive")
             neg_list = newest5(tsub, "Negative")
 
@@ -336,7 +429,6 @@ def render_dashboard(subject):
         )
     )
 
-
     # Bill Sentiment (cached)
     bills = fetch_df(BILL_SENTIMENT_URL)
     if bills.empty:
@@ -352,22 +444,13 @@ def render_dashboard(subject):
                     html.Table(
                         [
                             html.Thead([html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])]),
-                            html.Tbody(
-                                [
-                                    html.Tr(
-                                        [
-                                            html.Td(r.get("BillName", "") if isinstance(r, dict) else r["BillName"]),
-                                            html.Td(
-                                                (lambda v: round(v, 2) if pd.notna(v) else "—")(
-                                                    r.get("AverageSentimentScore", None) if isinstance(r, dict) else r["AverageSentimentScore"]
-                                                )
-                                            ),
-                                            html.Td(r.get("SentimentLabel", "") if isinstance(r, dict) else r["SentimentLabel"]),
-                                        ]
-                                    )
-                                    for _, r in bills.iterrows()
-                                ]
-                            ),
+                            html.Tbody([
+                                html.Tr([
+                                    html.Td(r.get("BillName", "") if isinstance(r, dict) else r["BillName"]),
+                                    html.Td((lambda v: round(v, 2) if pd.notna(v) else "—")(r.get("AverageSentimentScore", None) if isinstance(r, dict) else r["AverageSentimentScore"])),
+                                    html.Td(r.get("SentimentLabel", "") if isinstance(r, dict) else r["SentimentLabel"]),
+                                ]) for _, r in bills.iterrows()
+                            ]),
                         ],
                         style={"width": "100%"},
                     ),
@@ -386,16 +469,14 @@ def render_dashboard(subject):
             html.Div(
                 [
                     html.H2(f"Top Issues (Week of {week})", className="center-text"),
-                    html.Div(
-                        [
-                            html.Div([
-    html.H3("Conservative Topics", style={'color': 'crimson'}),
-    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
-    html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
-    html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
-])
-                        ]
-                    ),
+                    html.Div([
+                        html.Div([
+                            html.H3("Conservative Topics", style={'color': 'crimson'}),
+                            html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
+                            html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
+                            html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
+                        ])
+                    ]),
                 ],
                 className="dashboard-card",
             )
@@ -408,29 +489,24 @@ def render_dashboard(subject):
         if not filtered.empty:
             dynamic_cards.append(
                 html.Div(
-    [
-        html.H2("Common Ground Issues", className="center-text"),
-        html.Ul(
-            [
-                html.Li(
                     [
-                        html.Span(f"{r.get('IssueRank', '')}. ", style={"fontWeight": ""}),
-                        html.Span(f"{r.get('Issue', '')}: ", style={"fontWeight": ""}),
-                        html.Span(r.get("Explanation", ""))
+                        html.H2("Common Ground Issues", className="center-text"),
+                        html.Ul([
+                            html.Li([
+                                html.Span(f"{r.get('IssueRank', '')}. "),
+                                html.Span(f"{r.get('Issue', '')}: "),
+                                html.Span(r.get("Explanation", "")),
+                            ], className="common-ground-item")
+                            for _, r in filtered.iterrows()
+                        ], className="common-ground-list"),
                     ],
-                    className="common-ground-item"
+                    className="dashboard-card",
                 )
-                for _, r in filtered.iterrows()
-            ],
-            className="common-ground-list"
-        ),
-    ],
-    className="dashboard-card"
-)
-
             )
 
-    return dynamic_cards + chart_cards()
+    # FINAL: charts + latest comments table appended at the bottom
+    return dynamic_cards + chart_cards() + [latest_comments_card(subject)]
+
 
 
 # -----------------------------
@@ -534,44 +610,57 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
 )
 def update_mentions_chart(subject, mode, custom_start, custom_end):
     fig = go.Figure()
+
     if not subject:
         fig.update_layout(title="Select a subject to view data.", template="plotly_white")
         return fig
 
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    # Try mention counts endpoint (cached); if not present, derive from subject timeseries
-    df = fetch_df_with_params(MENTION_COUNT_URL, {"subject": subject})
-    if df.empty or "MentionCount" not in df.columns:
-        ts = fetch_df_with_params(TIMESERIES_URL, {"subject": subject})
-        if not ts.empty:
-            date_col = None
-            for c in ["CreatedUTC", "MentionDate", "SentimentDate", "Date"]:
-                if c in ts.columns:
-                    date_col = c
-                    break
-            if date_col is not None:
-                ts[date_col] = pd.to_datetime(ts[date_col], errors="coerce")
-                sub = ts[(ts.get("Subject", pd.Series()).astype(str).eq(str(subject))) & (ts[date_col].between(start, end))]
-                mention_count = int(len(sub))
-                df = pd.DataFrame({"Subject": [subject], "MentionCount": [mention_count]})
+    df = fetch_df_with_params(MENTION_COUNTS_DAILY_URL, {"subject": subject})
 
-    if not df.empty and "MentionCount" in df.columns:
-        if "Subject" in df.columns:
-            row = df[df["Subject"].astype(str) == str(subject)]
-            count = coerce_int(safe_first(row["MentionCount"], 0), default=0) if not row.empty else coerce_int(safe_first(df["MentionCount"], 0), default=0)
-        else:
-            count = coerce_int(safe_first(df["MentionCount"], 0), default=0)
-        fig.add_trace(go.Bar(x=[str(subject)], y=[count], name="Mentions"))
-        fig.update_layout(
-            title=f"Mentions ({mode})",
-            yaxis_title="Mentions",
-            xaxis_title="Subject",
-            template="plotly_white",
-        )
-    else:
+    if df.empty or "MentionCount" not in df.columns:
         fig.update_layout(title="No mention data available for the selected range.", template="plotly_white")
+        return fig
+
+    # Try to find the right date column
+    date_col = None
+    for c in ["Date", "MentionDate", "CreatedUTC", "Day"]:
+        if c in df.columns:
+            date_col = c
+            break
+    if not date_col:
+        fig.update_layout(title="No date column in mention count data.", template="plotly_white")
+        return fig
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df = df[(df["Subject"].astype(str) == str(subject)) & (df[date_col] >= start.date()) & (df[date_col] <= end.date())]
+
+    if df.empty:
+        fig.update_layout(title="No mention data available for the selected range.", template="plotly_white")
+        return fig
+
+    daily_counts = df.groupby(date_col)["MentionCount"].sum().reset_index(name="Mentions")
+    total_mentions = daily_counts["Mentions"].sum()
+
+    fig.add_trace(
+        go.Bar(
+            x=daily_counts[date_col],
+            y=daily_counts["Mentions"],
+            name="Mentions per Day",
+            marker_color="dodgerblue",
+        )
+    )
+
+    fig.update_layout(
+        title=f"Mentions ({mode}) — Total: {total_mentions:,}",
+        xaxis_title="Date",
+        yaxis_title="Mentions",
+        template="plotly_white",
+    )
+
     return fig
+
 
 
 @app.callback(
@@ -633,6 +722,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
     else:
         fig.update_layout(title="No momentum data available for the selected range.", template="plotly_white")
     return fig
+
 
 
 if __name__ == "__main__":
