@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, date
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "https://85f53f27b810.ngrok-free.app"
+BASE_URL = "https://ec8ee78b0c63.ngrok-free.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -482,27 +482,33 @@ def render_dashboard(subject):
             )
         )
 
-    # Common Ground (cached)
+        # Common Ground (cached)
     common_df = fetch_df(COMMON_GROUND_URL)
     if not common_df.empty and "Subject" in common_df.columns:
-        filtered = common_df[common_df["Subject"].astype(str) == str(subject)]
-        if not filtered.empty:
-            dynamic_cards.append(
-                html.Div(
-                    [
-                        html.H2("Common Ground Issues", className="center-text"),
-                        html.Ul([
-                            html.Li([
-                                html.Span(f"{r.get('IssueRank', '')}. "),
-                                html.Span(f"{r.get('Issue', '')}: "),
-                                html.Span(r.get("Explanation", "")),
-                            ], className="common-ground-item")
-                            for _, r in filtered.iterrows()
-                        ], className="common-ground-list"),
-                    ],
-                    className="dashboard-card",
-                )
-            )
+        subj_norm = str(subject).strip().casefold()
+        subj_col = common_df["Subject"].astype(str).str.strip().str.casefold()
+        filtered = common_df[subj_col.eq(subj_norm)]
+    else:
+        filtered = pd.DataFrame()
+
+    dynamic_cards.append(
+        html.Div(
+            [
+                html.H2("Common Ground Issues", className="center-text"),
+                (html.Ul([
+                    html.Li([
+                        html.Span(f"{r.get('IssueRank', '')}. "),
+                        html.Span(f"{r.get('Issue', '')}: "),
+                        html.Span(r.get("Explanation", "")),
+                    ], className="common-ground-item")
+                    for _, r in filtered.iterrows()
+                ], className="common-ground-list")
+                 if not filtered.empty else
+                 html.Div("No common ground items for this subject (yet)."))
+            ],
+            className="dashboard-card",
+        )
+    )  
 
     # FINAL: charts + latest comments table appended at the bottom
     return dynamic_cards + chart_cards() + [latest_comments_card(subject)]
