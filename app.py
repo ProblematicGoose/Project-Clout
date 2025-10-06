@@ -49,8 +49,10 @@ server = flask_app
 _TTL_SECONDS = 90  # adjust if you want longer/shorter freshness
 _CACHE: dict[str, tuple[float, object]] = {}
 
-def current_user_id():
-    return session.get("user_id")  # Will now work!
+from flask import session
+
+def current_user_id() -> str | None:
+    return session.get("user_id")
     
 def _cache_get(key: str):
     rec = _CACHE.get(key)
