@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request
 import pyodbc
 import pandas as pd
+import os
 from datetime import datetime
 from flask import session
 from sqlalchemy import text
@@ -39,11 +40,20 @@ def current_user_id() -> str | None:
     # Your auth layer should set this at login
     return session.get("user_id")
 
-@app.route('/login', methods=['POST'])
+@app.route('/login', methods=["POST"])
 def login():
-    # Authenticate user, then:
-    session["user_id"] = "b.723.smith@gmail.com"  # Replace with real user
-    return redirect("/dashboard")  # or wherever your Dash app lives
+    # (Replace this with your real auth logic)
+    email = request.form.get("email")
+    password = request.form.get("password")
+
+    if valid_credentials(email, password):  # Replace with your own check
+        session["user_id"] = email  # or any unique user ID
+        return redirect("/dashboard")  # or /app
+    else:
+        return "Login failed", 401
+
+app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-key")
+
 
 
 # GET: /api/scorecard
