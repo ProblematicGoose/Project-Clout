@@ -30,7 +30,7 @@ from sqlalchemy import create_engine
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "mssql+pyodbc://DESKTOP-VUKR5KV\Administrator:Is2*2set.tcp.ngrok.io,27671/Clout?driver=ODBC+Driver+17+for+SQL+Server"
+    "mssql+pyodbc://sa:Is2*2set@3.tcp.ngrok.io,27671/Clout?driver=ODBC+Driver+17+for+SQL+Server"
 )
 
 # Create the engine
