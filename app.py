@@ -8,6 +8,7 @@ import urllib.request
 import json
 from datetime import datetime, timedelta, date
 from dash.exceptions import PreventUpdate
+from flask import session
 
 
 # -----------------------------
@@ -38,8 +39,9 @@ engine = create_engine(DATABASE_URL)
 
 
 
-app = dash.Dash(__name__, suppress_callback_exceptions=True)
-server = app.server
+from flask_sql_api import app as flask_app
+app = dash.Dash(__name__, server=flask_app)
+server = flask_app
 
 # -----------------------------
 # Lightweight in-memory TTL cache (speeds up subject switches)
@@ -47,6 +49,9 @@ server = app.server
 _TTL_SECONDS = 90  # adjust if you want longer/shorter freshness
 _CACHE: dict[str, tuple[float, object]] = {}
 
+def current_user_id():
+    return session.get("user_id")  # Will now work!
+    
 def _cache_get(key: str):
     rec = _CACHE.get(key)
     if not rec:
