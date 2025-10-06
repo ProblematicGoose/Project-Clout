@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timedelta, date
 from dash.exceptions import PreventUpdate
 
+
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
