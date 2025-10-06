@@ -1,3 +1,6 @@
 dash
+flask
+sqlalchemy
+pyodbc
 pandas
-gunicorn
+plotly
