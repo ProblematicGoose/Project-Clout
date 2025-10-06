@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 import json
 from datetime import datetime, timedelta, date
+from dash.exceptions import PreventUpdate
 
 # -----------------------------
 # Config / Endpoints
@@ -23,6 +24,16 @@ MENTION_COUNT_URL = f"{BASE_URL}/api/mention-counts"
 MOMENTUM_URL = f"{BASE_URL}/api/momentum"
 MENTION_COUNTS_DAILY_URL = f"{BASE_URL}/api/mention-counts-daily"
 LATEST_COMMENTS_URL = f"{BASE_URL}/api/latest-comments"  # NEW
+import os
+from sqlalchemy import create_engine
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mssql+pyodbc://DESKTOP-VUKR5KV\Administrator:Is2*2set.tcp.ngrok.io,27671/Clout?driver=ODBC+Driver+17+for+SQL+Server"
+)
+
+# Create the engine
+engine = create_engine(DATABASE_URL)
 
 
 
@@ -189,6 +200,12 @@ except Exception:
 # -----------------------------
 app.layout = html.Div([
     html.H1("Sentiment Dashboard", style={"textAlign": "center", "paddingTop": "20px"}),
+    # Persist per-browser as a fallback when user is not authenticated
+    dcc.Store(id="local-default-subject", storage_type="local"),
+
+    # One-time page-load trigger
+    dcc.Interval(id="page-load-once", max_intervals=1, interval=250),
+    
 
     html.Div([
         dcc.Dropdown(
@@ -729,6 +746,70 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
         fig.update_layout(title="No momentum data available for the selected range.", template="plotly_white")
     return fig
 
+@app.callback(
+    Output("subject-dropdown", "value"),
+    [Input("page-load-once", "n_intervals")],
+    prevent_initial_call=True
+)
+def load_default_subject(_):
+    if _ is None:
+        raise PreventUpdate
+
+    uid = current_user_id()
+    try:
+        if uid:
+            with engine.begin() as conn:
+                row = conn.execute(
+                    text("SELECT default_subject FROM dbo.UserPreferences WHERE user_id = :u"),
+                    {"u": uid}
+                ).fetchone()
+            if row and row[0]:
+                return row[0]
+        # no user or no row: let the next callback try localStorage
+        raise PreventUpdate
+    except Exception:
+        # Fail safe: don't block page
+        raise PreventUpdate
+    
+@app.callback(
+    Output("subject-dropdown", "value", allow_duplicate=True),
+    [Input("page-load-once", "n_intervals"),
+     Input("local-default-subject", "data")],
+    prevent_initial_call=True
+)
+def load_from_local(_, local_data):
+    # If we've already set a value (e.g., from DB), don't overwrite.
+    # Dash doesn't give us the current 'value' here cleanly, so we just
+    # return None unless we have a local value and the initial render likely hasn't set one yet.
+    if not local_data or not isinstance(local_data, dict):
+        raise PreventUpdate
+    return local_data.get("default_subject") or dash.no_update
+
+@app.callback(
+    Output("local-default-subject", "data"),
+    Input("subject-dropdown", "value"),
+    prevent_initial_call=True
+)
+def persist_default_subject(value):
+    if not value:
+        return dash.no_update
+    uid = current_user_id()
+    try:
+        if uid:
+            with engine.begin() as conn:
+                # Upsert pattern for SQL Server (MERGE for full correctness; here’s a simple pattern)
+                conn.execute(text("""
+                    IF EXISTS (SELECT 1 FROM dbo.UserPreferences WHERE user_id = :u)
+                        UPDATE dbo.UserPreferences SET default_subject = :s WHERE user_id = :u;
+                    ELSE
+                        INSERT INTO dbo.UserPreferences (user_id, default_subject) VALUES (:u, :s);
+                """), {"u": uid, "s": value})
+            # For logged-in users we still return local data to keep UX consistent across tabs
+        # For guests, this is the primary persistence
+        return {"default_subject": value}
+    except Exception:
+        # Fallback: at least keep it locally
+        return {"default_subject": value}
 
 
 if __name__ == "__main__":
