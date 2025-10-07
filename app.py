@@ -8,7 +8,7 @@ import urllib.request
 import json
 from datetime import datetime, timedelta, date
 from dash.exceptions import PreventUpdate
-from flask import session
+from flask import session, request
 
 
 # -----------------------------
@@ -52,7 +52,16 @@ _CACHE: dict[str, tuple[float, object]] = {}
 from flask import session
 
 def current_user_id() -> str | None:
-    return session.get("user_id")
+    if "user_id" in session:
+        return session["user_id"]
+    
+    # Read from WordPress-set cookie
+    user_cookie = request.cookies.get("clout_user")
+    if user_cookie:
+        session["user_id"] = user_cookie
+        return user_cookie
+
+    return None
     
 def _cache_get(key: str):
     rec = _CACHE.get(key)
@@ -822,7 +831,6 @@ def persist_default_subject(value):
 
 if __name__ == "__main__":
     app.run(debug=True)
-
 
 
 
