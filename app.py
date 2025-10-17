@@ -207,8 +207,8 @@ TIME_MODES = [
 
 # Preload subjects for the subject dropdown
 try:
-    _scorecard_df = fetch_df(SCORECARD_URL)
-    subjects = sorted(_scorecard_df["Subject"].dropna().unique()) if "Subject" in _scorecard_df.columns else []
+    _photos_df = fetch_df(PHOTOS_URL)
+    subjects = sorted(_photos_df["Subject"].dropna().unique()) if "Subject" in _photos_df.columns else []
 except Exception:
     subjects = []
 
