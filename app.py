@@ -9,6 +9,8 @@ import json
 from datetime import datetime, timedelta, date
 from dash.exceptions import PreventUpdate
 from flask import session, request
+import concurrent.futures
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
 
 # -----------------------------
@@ -89,49 +91,50 @@ def _cache_set(key: str, value: object):
 # -----------------------------
 
 def fetch_df(url: str, timeout: int = 6) -> pd.DataFrame:
-    """
-    Fetch JSON -> DataFrame with TTL caching.
-    On network error/timeout, return STALE cached value if present (even if expired).
-    """
+    """Fetch JSON → DataFrame using background thread caching."""
     fresh_key = f"DF::{url}"
     cached = _cache_get(fresh_key)
     if isinstance(cached, pd.DataFrame):
-        return cached.copy()
+        return cached
 
-    # Also keep a pointer to the stale value (if any)
-    stale = _CACHE.get(fresh_key)
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            df = pd.DataFrame(json.load(r))
-            _cache_set(fresh_key, df.copy())
-            return df
-    except Exception:
-        # Fallback to stale cache even if expired
-        if isinstance(stale, tuple) and isinstance(stale[1], pd.DataFrame):
-            return stale[1].copy()
-        return pd.DataFrame()
+    def _fetch():
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                df = pd.DataFrame(json.load(r))
+                _cache_set(fresh_key, df)
+                return df
+        except Exception:
+            stale = _CACHE.get(fresh_key)
+            if isinstance(stale, tuple) and isinstance(stale[1], pd.DataFrame):
+                return stale[1]
+            return pd.DataFrame()
+
+    # submit async
+    future = _executor.submit(_fetch)
+    return future.result(timeout=timeout + 2)
 
 
 def fetch_json(url: str, timeout: int = 6) -> dict:
-    """
-    Fetch JSON dict with TTL caching.
-    On error/timeout, return STALE cached value if present (even if expired).
-    """
+    """Fetch JSON dict with caching and background I/O."""
     fresh_key = f"JSON::{url}"
     cached = _cache_get(fresh_key)
     if isinstance(cached, dict):
-        return json.loads(json.dumps(cached))
+        return cached
 
-    stale = _CACHE.get(fresh_key)
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            data = json.load(r)
-            _cache_set(fresh_key, json.loads(json.dumps(data)))
-            return data
-    except Exception:
-        if isinstance(stale, tuple) and isinstance(stale[1], dict):
-            return json.loads(json.dumps(stale[1]))
-        return {}
+    def _fetch():
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                data = json.load(r)
+                _cache_set(fresh_key, data)
+                return data
+        except Exception:
+            stale = _CACHE.get(fresh_key)
+            if isinstance(stale, tuple) and isinstance(stale[1], dict):
+                return stale[1]
+            return {}
+
+    future = _executor.submit(_fetch)
+    return future.result(timeout=timeout + 2)
 
 
 def fetch_df_with_params(base_url: str, params: dict, timeout: int = 6) -> pd.DataFrame:
@@ -396,8 +399,25 @@ def render_dashboard(subject):
         return dynamic_cards + chart_cards() + [latest_comments_card(None)]
 
     # Scorecard (cached)
-    scorecard = fetch_df(SCORECARD_URL)
-    photo = fetch_df(PHOTOS_URL)
+    urls = {
+        "scorecard": SCORECARD_URL,
+        "photo": PHOTOS_URL,
+        "traits": TRAITS_URL,
+        "bills": BILL_SENTIMENT_URL,
+        "common": COMMON_GROUND_URL,
+    }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {k: ex.submit(fetch_df, v) for k, v in urls.items()}
+        results = {k: f.result() for k, f in futures.items()}
+
+    scorecard = results["scorecard"]
+    photo = results["photo"]
+    traits = results["traits"]
+    bills = results["bills"]
+    common_df = results["common"]
+
+    # Initialize display variables
     score, office, party, state, photo_url = 10000, "", "", "", None
     if not scorecard.empty and "Subject" in scorecard.columns:
         row = scorecard[scorecard["Subject"].astype(str) == str(subject)]
@@ -549,8 +569,16 @@ def render_dashboard(subject):
         )
     )  
 
+    # Cache the full layout per subject to speed up repeat visits
+    subject_cache_key = f"DASH::{subject}"
+    cached_layout = _cache_get(subject_cache_key)
+    if cached_layout:
+        return cached_layout
+
     # FINAL: charts + latest comments table appended at the bottom
-    return dynamic_cards + chart_cards() + [latest_comments_card(subject)]
+    output = dynamic_cards + chart_cards() + [latest_comments_card(subject)]
+    _cache_set(subject_cache_key, output)
+    return output
 
 
 
