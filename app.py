@@ -74,6 +74,11 @@ def _cache_get(key: str):
 
 def _cache_set(key: str, value: object):
     _CACHE[key] = (time.time(), value)
+    # Limit cache to 20 entries max
+    if len(_CACHE) > 20:
+        oldest = sorted(_CACHE.items(), key=lambda kv: kv[1][0])[:5]
+        for k, _ in oldest:
+            _CACHE.pop(k, None)
 
 # -----------------------------
 # Helpers
@@ -830,7 +835,7 @@ def persist_default_subject(value):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)
 
 
 
