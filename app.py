@@ -17,7 +17,7 @@ _executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = os.environ.get("API_BASE", "") 
+BASE_URL = "https://sentiment-dashboard-3919.onrender.com"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"

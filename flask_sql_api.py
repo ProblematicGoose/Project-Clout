@@ -429,8 +429,8 @@ def subjects():
 # -----------------------------
 # Main (only if you run this module directly)
 # -----------------------------
-port = int(os.environ.get("PORT", 5050))
-flask_app.run(host="0.0.0.0", port=port, debug=False)
+if __name__ == "__main__":
+    flask_app.run(host="0.0.0.0", port=5050, debug=False)
 
 
 
