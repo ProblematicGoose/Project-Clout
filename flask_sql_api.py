@@ -1,149 +1,164 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, session, redirect
 import pyodbc
 import pandas as pd
 import os
 from datetime import datetime
-from flask import session
 from sqlalchemy import text
 
+"""
+Flask API server for dashboard data.
+- Includes YouTube across time series, momentum, mention counts, and latest comments.
+- Adds optional subject + date filtering to /api/momentum and /api/timeseries for performance.
+"""
 
-app = Flask(__name__)
+# -----------------------------
+# App + DB
+# -----------------------------
+flask_app = Flask(__name__)
+flask_app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-key")
 
-# Database connection string
-conn_str = (
-    'DRIVER={ODBC Driver 18 for SQL Server};'
-    'SERVER=DESKTOP-VUKR5KV;'
-    'DATABASE=Clout;'
-    'Trusted_Connection=yes;'
-    'TrustServerCertificate=yes;'
+# Local SQL Server connection (adjust if needed)
+CONN_STR = (
+    "DRIVER={ODBC Driver 18 for SQL Server};"
+    "SERVER=DESKTOP-VUKR5KV;"
+    "DATABASE=Clout;"
+    "Trusted_Connection=yes;"
+    "TrustServerCertificate=yes;"
 )
 
-# Utility function to run SQL or stored procedures
-def run_query(query, use_proc=False):
-    conn = pyodbc.connect(conn_str)
-    cursor = conn.cursor()
-
-    if use_proc:
-        cursor.execute(query)
-        columns = [column[0] for column in cursor.description]
-        rows = cursor.fetchall()
-        data = [dict(zip(columns, row)) for row in rows]
-        cursor.close()
+def run_query(query: str, params=None):
+    """Helper: run ad-hoc SQL and return list[dict]."""
+    conn = pyodbc.connect(CONN_STR)
+    try:
+        cur = conn.cursor()
+        if params:
+            cur.execute(query, params)
+        else:
+            cur.execute(query)
+        cols = [c[0] for c in cur.description]
+        rows = cur.fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
         conn.close()
-        return data
-    else:
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df.to_dict(orient="records")
 
-def current_user_id() -> str | None:
-    # Your auth layer should set this at login
-    return session.get("user_id")
-
-@app.route('/login', methods=["POST"])
-def login():
-    # (Replace this with your real auth logic)
-    email = request.form.get("email")
-    password = request.form.get("password")
-
-    if valid_credentials(email, password):  # Replace with your own check
-        session["user_id"] = email  # or any unique user ID
-        return redirect("/dashboard")  # or /app
-    else:
-        return "Login failed", 401
-
-app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-key")
-
-
-
-# GET: /api/scorecard
-@app.route('/api/scorecard')
+# -----------------------------
+# API: Scorecard (stored proc)
+# -----------------------------
+@flask_app.route("/api/scorecard")
 def scorecard():
     try:
-        raw_data = run_query("EXEC GetSubjectSentimentScores", use_proc=True)
-        for row in raw_data:
+        data = run_query("EXEC GetSubjectSentimentScores")
+        # Make sure the front-end sees ints
+        for row in data:
             if "NormalizedSentimentScore" in row and row["NormalizedSentimentScore"] is not None:
                 row["NormalizedSentimentScore"] = int(row["NormalizedSentimentScore"])
-        return jsonify(raw_data)
+        return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/timeseries
-@app.route('/api/timeseries')
+# -----------------------------
+# API: Timeseries (subject/date aware, includes YouTube)
+# -----------------------------
+@flask_app.route("/api/timeseries")
 def timeseries():
     try:
-        query = """
-        SELECT
-            CAST(SentimentDate AS DATE) AS SentimentDate,
-            Subject,
-            CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
-        FROM (
-            SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM RedditCommentsUSSenate
-            UNION ALL
-            SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM BlueskyCommentsUSSenate
-        ) AS Combined
-        GROUP BY CAST(SentimentDate AS DATE), Subject
-        ORDER BY SentimentDate ASC, Subject ASC
+        subject = request.args.get("subject")
+        start   = request.args.get("start_date")
+        end     = request.args.get("end_date")
+
+        date_where = ""
+        if start and end:
+            try:
+                datetime.strptime(start, "%Y-%m-%d")
+                datetime.strptime(end, "%Y-%m-%d")
+                date_where = f"WHERE CreatedUTC BETWEEN '{start}' AND '{end}'"
+            except ValueError:
+                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+
+        subject_where = "WHERE Subject = ?" if subject else ""
+
+        query = f"""
+            SELECT
+                CAST(SentimentDate AS DATE) AS SentimentDate,
+                Subject,
+                CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
+            FROM (
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
+            ) AS Combined
+            {subject_where}
+            GROUP BY CAST(SentimentDate AS DATE), Subject
+            ORDER BY SentimentDate ASC, Subject ASC;
         """
+        if subject:
+            return jsonify(run_query(query, params=(subject,)))
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/traits
-@app.route('/api/traits')
+# -----------------------------
+# API: Traits
+# -----------------------------
+@flask_app.route("/api/traits")
 def traits():
     try:
         query = """
-        SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
-        FROM SubjectTraitSummary
-        ORDER BY Subject, TraitType, CreatedUTC
+            SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
+            FROM SubjectTraitSummary
+            ORDER BY Subject, TraitType, CreatedUTC
         """
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/bill-sentiment
-@app.route('/api/bill-sentiment')
+# -----------------------------
+# API: Bill sentiment
+# -----------------------------
+@flask_app.route("/api/bill-sentiment")
 def bill_sentiment():
     try:
         query = """
-        SELECT
-            BillName,
-            CAST(ROUND(AVG(SentimentScore), 2) AS FLOAT) AS AverageSentimentScore,
-            CASE
-                WHEN AVG(SentimentScore) >= 0.50 THEN 'Very Positive'
-                WHEN AVG(SentimentScore) >= 0.05 THEN 'Slightly Positive'
-                WHEN AVG(SentimentScore) > -0.05 AND AVG(SentimentScore) < 0.05 THEN 'Neutral'
-                WHEN AVG(SentimentScore) <= -0.05 THEN 'Slightly Negative'
-                WHEN AVG(SentimentScore) <= -0.50 THEN 'Very Negative'
-            END AS SentimentLabel
-        FROM NationalBillSentimentMentions
-        WHERE CAST(ReasonSummary AS VARCHAR(MAX)) <> 'No reference to the bill found.'
-        GROUP BY BillName
-        ORDER BY AverageSentimentScore DESC
+            SELECT
+                BillName,
+                CAST(ROUND(AVG(SentimentScore), 2) AS FLOAT) AS AverageSentimentScore,
+                CASE
+                    WHEN AVG(SentimentScore) >= 0.50 THEN 'Very Positive'
+                    WHEN AVG(SentimentScore) >= 0.05 THEN 'Slightly Positive'
+                    WHEN AVG(SentimentScore) > -0.05 AND AVG(SentimentScore) < 0.05 THEN 'Neutral'
+                    WHEN AVG(SentimentScore) <= -0.05 THEN 'Slightly Negative'
+                    WHEN AVG(SentimentScore) <= -0.50 THEN 'Very Negative'
+                END AS SentimentLabel
+            FROM NationalBillSentimentMentions
+            WHERE CAST(ReasonSummary AS VARCHAR(MAX)) <> 'No reference to the bill found.'
+            GROUP BY BillName
+            ORDER BY AverageSentimentScore DESC;
         """
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/top-issues
-@app.route('/api/top-issues')
+# -----------------------------
+# API: Weekly top issues
+# -----------------------------
+@flask_app.route("/api/top-issues")
 def top_issues():
     try:
-        conn = pyodbc.connect(conn_str)
-        cursor = conn.cursor()
-        cursor.execute("SELECT MAX(WeekStartDate) FROM WeeklyIdeologyTopics")
-        latest_week = cursor.fetchone()[0]
+        conn = pyodbc.connect(CONN_STR)
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(WeekStartDate) FROM WeeklyIdeologyTopics")
+        latest_week = cur.fetchone()[0]
 
-        cursor.execute("""
+        cur.execute("""
             SELECT WeekStartDate, IdeologyLabel, Rank, Topic
             FROM WeeklyIdeologyTopics
             WHERE WeekStartDate = ?
             ORDER BY IdeologyLabel, Rank ASC
         """, (latest_week,))
-
-        rows = cursor.fetchall()
-        cursor.close()
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
 
         results = {
@@ -151,84 +166,90 @@ def top_issues():
             "Liberal": [],
             "Conservative": []
         }
-
-        for row in rows:
-            results[row.IdeologyLabel].append({
-                "Rank": row.Rank,
-                "Topic": row.Topic
-            })
-
+        for r in rows:
+            results[r.IdeologyLabel].append({"Rank": r.Rank, "Topic": r.Topic})
         return jsonify(results)
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/common-ground-issues
-@app.route('/api/common-ground-issues')
+# -----------------------------
+# API: Common ground issues
+# -----------------------------
+@flask_app.route("/api/common-ground-issues")
 def common_ground_issues():
     try:
         query = """
-        WITH Latest AS (
-            SELECT Subject, MAX(GeneratedDate) AS LatestGeneratedDate
-            FROM CommonGroundIssues
-            GROUP BY Subject
-        )
-        SELECT c.Subject, c.IssueRank, c.Issue, c.Explanation, c.GeneratedDate
-        FROM CommonGroundIssues c
-        INNER JOIN Latest l ON c.Subject = l.Subject AND c.GeneratedDate = l.LatestGeneratedDate
-        ORDER BY c.Subject, c.IssueRank
+            WITH Latest AS (
+                SELECT Subject, MAX(GeneratedDate) AS LatestGeneratedDate
+                FROM CommonGroundIssues
+                GROUP BY Subject
+            )
+            SELECT c.Subject, c.IssueRank, c.Issue, c.Explanation, c.GeneratedDate
+            FROM CommonGroundIssues c
+            INNER JOIN Latest l
+                ON c.Subject = l.Subject AND c.GeneratedDate = l.LatestGeneratedDate
+            ORDER BY c.Subject, c.IssueRank;
         """
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/subject-photos
-@app.route('/api/subject-photos')
+# -----------------------------
+# API: Subject photos
+# -----------------------------
+@flask_app.route("/api/subject-photos")
 def subject_photos():
     try:
         query = """
-        SELECT Subject, PhotoURL, OfficeTitle, State, Party, SourceWebsite
-        FROM ElectedOfficialPhotos
-        ORDER BY Subject
+            SELECT Subject, PhotoURL, OfficeTitle, State, Party, SourceWebsite
+            FROM ElectedOfficialPhotos
+            ORDER BY Subject
         """
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/mention-counts
-@app.route('/api/mention-counts')
+# -----------------------------
+# API: Mention counts (includes YouTube)
+# -----------------------------
+@flask_app.route("/api/mention-counts")
 def mention_counts():
     try:
-        start = request.args.get('start_date')
-        end = request.args.get('end_date')
+        start = request.args.get("start_date")
+        end   = request.args.get("end_date")
 
         where_clause = ""
         if start and end:
             where_clause = f"WHERE CreatedUTC BETWEEN '{start}' AND '{end}'"
 
         query = f"""
-        SELECT Subject, COUNT(*) AS MentionCount FROM (
-            SELECT Subject, CreatedUTC FROM RedditCommentsUSSenate {where_clause}
-            UNION ALL
-            SELECT Subject, CreatedUTC FROM RedditPostsUSSenate {where_clause}
-            UNION ALL
-            SELECT Subject, CreatedUTC FROM BlueskyCommentsUSSenate {where_clause}
-            UNION ALL
-            SELECT Subject, CreatedUTC FROM BlueskyPostsUSSenate {where_clause}
-        ) AS AllMentions
-        GROUP BY Subject
-        ORDER BY MentionCount DESC
+            SELECT Subject, COUNT(*) AS MentionCount FROM (
+                SELECT Subject, CreatedUTC FROM dbo.RedditCommentsUSSenate {where_clause}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.RedditPostsUSSenate {where_clause}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.BlueskyCommentsUSSenate {where_clause}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.BlueskyPostsUSSenate {where_clause}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.YouTubeComments {where_clause}
+            ) AS AllMentions
+            GROUP BY Subject
+            ORDER BY MentionCount DESC;
         """
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/momentum
-@app.route('/api/momentum')
+# -----------------------------
+# API: Momentum (subject/date aware, includes YouTube)
+# -----------------------------
+@flask_app.route("/api/momentum")
 def momentum():
     try:
-        start = request.args.get('start_date')
-        end = request.args.get('end_date')
+        subject = request.args.get("subject")
+        start   = request.args.get("start_date")
+        end     = request.args.get("end_date")
 
         where_clause = ""
         if start and end:
@@ -239,104 +260,98 @@ def momentum():
             except ValueError:
                 return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
 
+        subject_clause = "WHERE Subject = ?" if subject else ""
+
         query = f"""
-        SELECT
-            Subject,
-            CAST(CreatedUTC AS DATE) AS ActivityDate,
-            COUNT(*) AS MentionCount,
-            AVG(SentimentScore) AS AvgSentiment,
-            COUNT(*) * AVG(SentimentScore) AS MomentumScore
-        FROM (
-            SELECT Subject, SentimentScore, CreatedUTC FROM RedditCommentsUSSenate {where_clause}
-            UNION ALL
-            SELECT Subject, SentimentScore, CreatedUTC FROM BlueskyCommentsUSSenate {where_clause}
-        ) AS AllActivity
-        GROUP BY Subject, CAST(CreatedUTC AS DATE)
-        ORDER BY Subject, ActivityDate
+            SELECT
+                Subject,
+                CAST(CreatedUTC AS DATE) AS ActivityDate,
+                COUNT(*) AS MentionCount,
+                AVG(SentimentScore) AS AvgSentiment
+            FROM (
+                SELECT Subject, SentimentScore, CreatedUTC FROM dbo.RedditCommentsUSSenate {where_clause}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC FROM dbo.BlueskyCommentsUSSenate {where_clause}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC FROM dbo.YouTubeComments {where_clause}
+            ) AS AllActivity
+            {subject_clause}
+            GROUP BY Subject, CAST(CreatedUTC AS DATE)
+            ORDER BY Subject, ActivityDate;
         """
+        if subject:
+            return jsonify(run_query(query, params=(subject,)))
         return jsonify(run_query(query))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/mention-counts-daily", methods=["GET"])
+# -----------------------------
+# API: Mention counts by day (subject)
+# -----------------------------
+@flask_app.route("/api/mention-counts-daily")
 def mention_counts_daily():
     subject = request.args.get("subject")
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
+    start   = request.args.get("start_date") or "2025-01-01"
+    end     = request.args.get("end_date") or datetime.now().strftime("%Y-%m-%d")
 
     if not subject:
         return jsonify({"error": "Missing 'subject' parameter"}), 400
-    if not start_date:
-        start_date = "2025-01-01"
-    if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%d")
 
     try:
-        start = datetime.fromisoformat(start_date)
-        end = datetime.fromisoformat(end_date)
+        start_dt = datetime.fromisoformat(start)
+        end_dt   = datetime.fromisoformat(end)
     except Exception:
         return jsonify({"error": "Invalid date format (use YYYY-MM-DD)"}), 400
 
     try:
-        conn = pyodbc.connect(conn_str)
-        cursor = conn.cursor()
-
+        conn = pyodbc.connect(CONN_STR)
+        cur = conn.cursor()
         query = """
             SELECT
                 Subject,
                 CAST(CreatedUTC AS DATE) AS [Date],
                 COUNT(*) AS MentionCount
             FROM (
-                SELECT Subject, CreatedUTC FROM RedditCommentsUSSenate
+                SELECT Subject, CreatedUTC FROM dbo.RedditCommentsUSSenate
                 UNION ALL
-                SELECT Subject, CreatedUTC FROM RedditPostsUSSenate
+                SELECT Subject, CreatedUTC FROM dbo.RedditPostsUSSenate
                 UNION ALL
-                SELECT Subject, CreatedUTC FROM BlueskyCommentsUSSenate
+                SELECT Subject, CreatedUTC FROM dbo.BlueskyCommentsUSSenate
                 UNION ALL
-                SELECT Subject, CreatedUTC FROM BlueskyPostsUSSenate
+                SELECT Subject, CreatedUTC FROM dbo.BlueskyPostsUSSenate
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.YouTubeComments
             ) AS combined
             WHERE Subject = ?
               AND CreatedUTC BETWEEN ? AND ?
             GROUP BY Subject, CAST(CreatedUTC AS DATE)
-            ORDER BY [Date]
+            ORDER BY [Date];
         """
+        cur.execute(query, (subject, start_dt, end_dt))
+        rows = cur.fetchall()
+        conn.close()
 
-        cursor.execute(query, subject, start, end)
-        rows = cursor.fetchall()
-
-        data = [
-            {
-                "Subject": row.Subject,
-                "Date": row.Date.isoformat(),
-                "MentionCount": row.MentionCount
-            }
-            for row in rows
-        ]
+        data = [{"Subject": r.Subject, "Date": r.Date.isoformat(), "MentionCount": r.MentionCount} for r in rows]
         return jsonify(data)
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# GET: /api/latest-comments
-@app.route('/api/latest-comments')
+# -----------------------------
+# API: Latest comments (includes YouTube video URL join)
+# -----------------------------
+@flask_app.route("/api/latest-comments")
 def latest_comments():
-    """
-    Returns the latest N comments (default 10) across Reddit + Bluesky,
-    optionally filtered to a single Subject. Columns: Source, Comment, Timestamp, URL.
-    """
-    subject = request.args.get('subject')
-    # sanitize and clamp the limit; TOP can't be parameterized directly in T-SQL
+    subject = request.args.get("subject")
+    # clamp limit 1..50
     try:
-        limit = int(request.args.get('limit', 10))
+        limit = int(request.args.get("limit", 10))
     except ValueError:
         limit = 10
-    limit = max(1, min(limit, 50))  # 1..50
+    limit = max(1, min(limit, 50))
 
     try:
-        conn = pyodbc.connect(conn_str)
-        cursor = conn.cursor()
-
-        # Build query. Parameterize subject; inline TOP for SQL Server.
+        conn = pyodbc.connect(CONN_STR)
+        cur = conn.cursor()
         query = f"""
             WITH Combined AS (
                 SELECT
@@ -354,6 +369,15 @@ def latest_comments():
                     CAST(URL AS NVARCHAR(4000))      AS URL,
                     CAST(Subject AS NVARCHAR(255))   AS Subject
                 FROM dbo.BlueskyCommentsUSSenate
+                UNION ALL
+                SELECT
+                    'YouTube' AS Source,
+                    CAST(yc.[Text] AS NVARCHAR(MAX))   AS Comment,
+                    CAST(yc.CreatedUTC AS DATETIME)    AS CreatedUTC,
+                    CAST(yv.URL AS NVARCHAR(4000))     AS URL,
+                    CAST(yc.Subject AS NVARCHAR(255))  AS Subject
+                FROM dbo.YouTubeComments yc
+                LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
             )
             SELECT TOP {limit}
                 Source, Comment, CreatedUTC, URL, Subject
@@ -361,16 +385,12 @@ def latest_comments():
             { "WHERE Subject = ?" if subject else "" }
             ORDER BY CreatedUTC DESC;
         """
-
         params = (subject,) if subject else ()
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        cursor.close()
+        cur.execute(query, params)
+        rows = cur.fetchall()
         conn.close()
 
-        # Format response with desired columns
         def fmt_ts(dt):
-            # Try friendly "7/15/24 4:43 PM" on Windows/Linux; fall back to ISO
             try:
                 return dt.strftime("%#m/%#d/%y %#I:%M %p")  # Windows
             except Exception:
@@ -380,23 +400,19 @@ def latest_comments():
                     return dt.isoformat(sep=" ")
 
         data = [
-            {
-                "Source": row.Source,
-                "Comment": row.Comment,
-                "Timestamp": fmt_ts(row.CreatedUTC),
-                "URL": row.URL
-            }
-            for row in rows
+            {"Source": r.Source, "Comment": r.Comment, "Timestamp": fmt_ts(r.CreatedUTC), "URL": r.URL}
+            for r in rows
         ]
-
         return jsonify(data)
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# App start
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050)
+# -----------------------------
+# Main (only if you run this module directly)
+# -----------------------------
+if __name__ == "__main__":
+    flask_app.run(host="0.0.0.0", port=5050, debug=False)
+
 
 
 
