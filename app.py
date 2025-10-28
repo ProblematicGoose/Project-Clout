@@ -1,8 +1,6 @@
 import time
 import dash
-from dash import dcc, html, Input, Output
 import pandas as pd
-import plotly.graph_objs as go
 import urllib.parse
 import urllib.request
 import json
@@ -10,6 +8,8 @@ from datetime import datetime, timedelta, date
 from dash.exceptions import PreventUpdate
 from flask import session, request
 import concurrent.futures
+from dash import dcc, html, Input, Output, State, callback_context
+import plotly.graph_objects as go
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
 
@@ -29,7 +29,7 @@ MOMENTUM_URL = f"{BASE_URL}/api/momentum"
 MENTION_COUNTS_DAILY_URL = f"{BASE_URL}/api/mention-counts-daily"
 LATEST_COMMENTS_URL = f"{BASE_URL}/api/latest-comments"  # NEW
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -150,40 +150,193 @@ def start_of_today() -> datetime:
     return datetime(year=now.year, month=now.month, day=now.day)
 
 
-def date_range_from_mode(mode: str, custom_start: str | None, custom_end: str | None) -> tuple[datetime, datetime]:
-    now = datetime.now()
-    if mode == "Today":
-        start = start_of_today()
-        end = now
-    elif mode == "This Week":
-        monday = start_of_today() - timedelta(days=start_of_today().weekday())
-        start = monday
-        end = now
-    elif mode == "This Month":
-        first = datetime(now.year, now.month, 1)
-        start = first
-        end = now
-    elif mode == "This Year":
-        first = datetime(now.year, 1, 1)
-        start = first
-        end = now
-    elif mode == "Custom":
+
+
+# --- MOMENTUM MATH (helper) ---
+import numpy as np
+import pandas as pd
+
+def compute_momentum(df: pd.DataFrame, ema_fast: int = 7, ema_slow: int = 21, dead_zone: float = 0.05) -> pd.DataFrame:
+    """
+    Input: df with columns ['Subject', 'ActivityDate', 'MentionCount', 'AvgSentiment'] (daily aggregates).
+    Steps:
+      1) Dead-zone tiny sentiment values to 0 (|x| < dead_zone).
+      2) base_t = log1p(mentions_t) * sentiment_t
+      3) momentum = EMA( base_t, span=ema_fast )
+      4) z-score momentum vs rolling 90d per subject
+      5) accel = EMA_fast - EMA_slow (MACD-style)
+    Output: original columns + ['base','ema_fast','ema_slow','momentum','z_momentum','accel']
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "Subject", "ActivityDate", "MentionCount", "AvgSentiment",
+            "base", "ema_fast", "ema_slow", "momentum", "z_momentum", "accel"
+        ])
+
+    out = df.copy()
+    # Ensure types and ordering
+    out["ActivityDate"] = pd.to_datetime(out["ActivityDate"], errors="coerce")
+    out = out.dropna(subset=["ActivityDate"])
+    out = out.sort_values(["Subject", "ActivityDate"])
+
+    # Dead-zone tiny sentiment noise
+    def _deadzone(x: float) -> float:
         try:
-            start_date = datetime.fromisoformat(custom_start) if custom_start else (now - timedelta(days=30))
+            x = float(x)
         except Exception:
-            start_date = now - timedelta(days=30)
+            return 0.0
+        return 0.0 if (-dead_zone < x < dead_zone) else x
+
+    out["AvgSentiment"] = out["AvgSentiment"].map(_deadzone).astype(float)
+    out["MentionCount"] = pd.to_numeric(out["MentionCount"], errors="coerce").fillna(0.0)
+
+    # Base = log1p(mentions) * sentiment
+    out["base"] = np.log1p(out["MentionCount"]) * out["AvgSentiment"]
+
+    # Per-subject EMA/z-score/accel
+    frames = []
+    for subject, g in out.groupby("Subject", sort=False):
+        g = g.sort_values("ActivityDate")
+        g["ema_fast"] = g["base"].ewm(span=ema_fast, adjust=False).mean()
+        g["ema_slow"] = g["base"].ewm(span=ema_slow, adjust=False).mean()
+        g["momentum"] = g["ema_fast"]
+
+        roll = g["momentum"].rolling(90, min_periods=15)
+        mu = roll.mean()
+        sigma = roll.std(ddof=0).replace(0, np.nan)
+        g["z_momentum"] = (g["momentum"] - mu) / sigma
+
+        g["accel"] = g["ema_fast"] - g["ema_slow"]
+        frames.append(g)
+
+    out = pd.concat(frames, ignore_index=True) if frames else out
+    return out
+
+
+
+# --- FETCH HELPER (Momentum endpoint) ---
+import os
+import requests
+
+def fetch_momentum_df(subject: str | None = None, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+    """
+    Calls your Flask endpoint /api/momentum and normalizes the response to:
+      ['Subject', 'ActivityDate', 'MentionCount', 'AvgSentiment']
+    It gracefully handles slight column-name differences.
+    """
+    # Try to use an existing constant if your app defines it; else build from env/default
+    url = None
+    try:
+        url = MOMENTUM_URL  # if your app already defines this
+    except NameError:
+        api_base = os.environ.get("API_BASE", "http://localhost:5050")
+        url = f"{api_base.rstrip('/')}/api/momentum"
+
+    params = {}
+    if start_date: params["start_date"] = start_date
+    if end_date:   params["end_date"]   = end_date
+    # (API supports optional subject filter; if not, we'll filter client-side)
+    if subject:    params["subject"]    = subject
+
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    df = pd.DataFrame(data)
+
+    if df.empty:
+        return pd.DataFrame(columns=["Subject", "ActivityDate", "MentionCount", "AvgSentiment"])
+
+    # Normalize column names
+    # ActivityDate could come as 'ActivityDate', 'Date', or similar
+    if "ActivityDate" not in df.columns:
+        for c in ("Date", "MomentumDate", "CreatedUTC"):
+            if c in df.columns:
+                df = df.rename(columns={c: "ActivityDate"})
+                break
+
+    # Mention count sometimes capitalized differently
+    if "MentionCount" not in df.columns:
+        for c in ("Mentions", "Count"):
+            if c in df.columns:
+                df = df.rename(columns={c: "MentionCount"})
+                break
+
+    # Average sentiment sometimes 'AvgSentiment' or 'AverageSentiment'
+    if "AvgSentiment" not in df.columns:
+        for c in ("AverageSentiment", "Avg_Sentiment", "SentimentAvg"):
+            if c in df.columns:
+                df = df.rename(columns={c: "AvgSentiment"})
+                break
+
+    # Keep only the fields we need; coerce types
+    keep = ["Subject", "ActivityDate", "MentionCount", "AvgSentiment"]
+    for k in keep:
+        if k not in df.columns:
+            df[k] = None
+    df = df[keep].copy()
+    df["ActivityDate"] = pd.to_datetime(df["ActivityDate"], errors="coerce")
+    df["MentionCount"] = pd.to_numeric(df["MentionCount"], errors="coerce")
+    df["AvgSentiment"] = pd.to_numeric(df["AvgSentiment"], errors="coerce")
+
+    # If API didn’t filter by subject, do it here
+    if subject:
+        df = df[df["Subject"].astype(str) == str(subject)]
+
+    return df.dropna(subset=["ActivityDate"])
+
+# --- DATE RANGE HELPER (for momentum controls) ---
+
+def date_range_from_mode(mode: str | None, custom_start: str | None, custom_end: str | None):
+    """
+    Returns (start, end) as pandas Timestamps (UTC-normalized midnight).
+    Supports:
+      Legacy: "Today", "This Week", "This Month", "This Year", "Custom"
+      New:    "7d", "30d", "90d", "custom"
+    Defaults to last 30 days on unknown mode or malformed dates.
+    """
+    m = (mode or "").strip().lower()
+    today = pd.Timestamp.utcnow().normalize()
+
+    def _safe_custom():
         try:
-            end_date = datetime.fromisoformat(custom_end) if custom_end else now
+            s = pd.to_datetime(custom_start).normalize()
+            e = pd.to_datetime(custom_end).normalize()
+            if pd.isna(s) or pd.isna(e):
+                raise ValueError
+            return min(s, e), max(s, e)
         except Exception:
-            end_date = now
-        if end_date < start_date:
-            start_date, end_date = end_date, start_date
-        end = end_date + timedelta(days=1) - timedelta(seconds=1)
-        start = start_date
+            return today - pd.Timedelta(days=30), today
+
+    # New options
+    if m in {"7d", "last7", "last_7_days"}:
+        start = today - pd.Timedelta(days=7);  end = today
+    elif m in {"30d", "last30", "last_30_days"}:
+        start = today - pd.Timedelta(days=30); end = today
+    elif m in {"90d", "last90", "last_90_days"}:
+        start = today - pd.Timedelta(days=90); end = today
+    elif m == "custom":
+        start, end = _safe_custom()
+
+    # Legacy options
+    elif m == "today":
+        start = today; end = today
+    elif m in {"this week", "week"}:
+        start = today - pd.Timedelta(days=today.weekday())  # Monday-start; tweak if Sunday-start preferred
+        end = today
+    elif m in {"this month", "month"}:
+        start = today.replace(day=1); end = today
+    elif m in {"this year", "year"}:
+        start = today.replace(month=1, day=1); end = today
+    elif m in {"custom (legacy)"}:
+        start, end = _safe_custom()
     else:
-        start = now - timedelta(days=30)
-        end = now
+        # Default
+        start = today - pd.Timedelta(days=30); end = today
+
+    if start > end:
+        start, end = end, start
     return start, end
+
 
 
 def coerce_int(value, default=0):
@@ -203,15 +356,20 @@ def safe_first(series, default=None):
         return v
     except Exception:
         return default
-
-
+    
+ # Radio options for date ranges used by all charts
 TIME_MODES = [
-    {"label": "Today", "value": "Today"},
-    {"label": "This Week", "value": "This Week"},
+    {"label": "Today",      "value": "Today"},
+    {"label": "This Week",  "value": "This Week"},
     {"label": "This Month", "value": "This Month"},
-    {"label": "This Year", "value": "This Year"},
-    {"label": "Custom", "value": "Custom"},
-]
+    {"label": "This Year",  "value": "This Year"},
+    {"label": "Custom",     "value": "Custom"},
+    # If you want quick-shortcuts too, uncomment any of these:
+    # {"label": "Last 7d",  "value": "7d"},
+    # {"label": "Last 30d", "value": "30d"},
+    # {"label": "Last 90d", "value": "90d"},
+]   
+
 
 # Preload subjects for the subject dropdown
 try:
@@ -312,7 +470,7 @@ def chart_cards():
 
 def latest_comments_card(subject: str | None):
     """
-    Big table at the bottom showing newest 10 total comments across Reddit + Bluesky.
+    Big table at the bottom showing newest 10 total comments across Reddit + Bluesky + YouTube.
     This version is non-blocking: on error/timeout, it shows cached or a friendly placeholder.
     """
     params = {"limit": 10}
@@ -736,6 +894,7 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
 
 
 
+# --- MOMENTUM CALLBACK (z-scored EMA of log-volume-weighted sentiment) ---
 @app.callback(
     Output("momentum-graph", "figure"),
     [
@@ -747,54 +906,94 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
 )
 def update_momentum_chart(subject, mode, custom_start, custom_end):
     fig = go.Figure()
+
+    # Guardrails: need a subject selected
     if not subject:
-        fig.update_layout(title="Select a subject to view data.", template="plotly_white")
+        fig.update_layout(
+            title="Select a subject to view momentum.",
+            template="plotly_white",
+            xaxis_title="Date",
+            yaxis_title="Z-Score vs 90-day baseline",
+        )
+        fig.add_hline(y=0, line_width=1, line_dash="dot")
         return fig
 
-    start, end = date_range_from_mode(mode, custom_start, custom_end)
+    # Determine date range using your existing helper
+    # (Assumes you already have a function date_range_from_mode(mode, custom_start, custom_end) elsewhere in your file.)
+    try:
+        start, end = date_range_from_mode(mode, custom_start, custom_end)
+    except NameError:
+        # Fallback: if helper not present, default to last 30 days
+        import pandas as pd
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=30)
 
-    # Fetch per-subject momentum once; filter locally for speed
-    df = fetch_df_with_params(MOMENTUM_URL, {"subject": subject})
-    if df.empty:
-        df = fetch_df(MOMENTUM_URL)
+    # Fetch raw daily aggregates for this subject
+    df_raw = fetch_momentum_df(subject=subject, start_date=str(start.date()), end_date=str(end.date()))
 
-    if not df.empty:
-        if "Subject" in df.columns:
-            df = df[df["Subject"].astype(str) == str(subject)]
-        if "MomentumDate" not in df.columns:
-            for c in ["ActivityDate", "Date"]:
-                if c in df.columns:
-                    df = df.rename(columns={c: "MomentumDate"})
-                    break
-        if "Momentum" not in df.columns:
-            for c in ["MomentumScore", "Value", "Score"]:
-                if c in df.columns:
-                    df = df.rename(columns={c: "Momentum"})
-                    break
-        if "MomentumDate" in df.columns:
-            df["MomentumDate"] = pd.to_datetime(df["MomentumDate"], errors="coerce")
-            df = df.dropna(subset=["MomentumDate"])
-            df = df[(df["MomentumDate"] >= start) & (df["MomentumDate"] <= end)]
-            df = (
-                df.groupby(df["MomentumDate"].dt.date)
-                .agg({"Momentum": "mean"})
-                .reset_index()
-                .rename(columns={"MomentumDate": "Date"})
-            )
-            df["Date"] = pd.to_datetime(df["Date"])
-            df = df.sort_values("Date")
-
-    if not df.empty and {"Date", "Momentum"}.issubset(df.columns):
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["Momentum"], mode="lines+markers", name=str(subject)))
+    # Normalize + sanity checks
+    if df_raw.empty or not {"Subject", "ActivityDate", "MentionCount", "AvgSentiment"}.issubset(df_raw.columns):
         fig.update_layout(
-            title=f"Momentum = Mentions × Avg Sentiment ({mode})",
-            xaxis_title="Date",
-            yaxis_title="Momentum",
+            title="No momentum data available for the selected range.",
             template="plotly_white",
+            xaxis_title="Date",
+            yaxis_title="Z-Score vs 90-day baseline",
         )
-    else:
-        fig.update_layout(title="No momentum data available for the selected range.", template="plotly_white")
+        fig.add_hline(y=0, line_width=1, line_dash="dot")
+        return fig
+
+    # Compute momentum features
+    df = compute_momentum(df_raw)
+    df = df.sort_values("ActivityDate")
+
+    # Diverging bars of z-score momentum
+    fig.add_bar(
+        name=f"{subject} — z-momentum",
+        x=df["ActivityDate"],
+        y=df["z_momentum"],
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Date: %{x|%Y-%m-%d}<br>"
+            "Z-Momentum: %{y:.2f}<br>"
+            "Mentions: %{customdata[1]:.0f}<br>"
+            "Avg Sentiment: %{customdata[2]:.2f}<br>"
+            "Base: %{customdata[3]:.3f}<br>"
+            "EMA7: %{customdata[4]:.3f}<br>"
+            "<extra></extra>"
+        ),
+        customdata=np.stack([
+            df["Subject"].astype(str).values,
+            df["MentionCount"].fillna(0).values,
+            df["AvgSentiment"].fillna(0).values,
+            df["base"].fillna(0).values,
+            df["ema_fast"].fillna(0).values,
+        ], axis=-1),
+    )
+
+    # Acceleration overlay (EMA7 − EMA21)
+    fig.add_trace(go.Scatter(
+        name=f"{subject} — accel (EMA7−EMA21)",
+        x=df["ActivityDate"],
+        y=df["accel"],
+        mode="lines",
+        hovertemplate="Acceleration: %{y:.3f}<extra></extra>",
+    ))
+
+    # Layout polish
+    fig.update_layout(
+        title="Momentum (z-scored EMA of log-volume-weighted sentiment)",
+        xaxis_title="Date",
+        yaxis_title="Z-Score vs 90-day baseline",
+        barmode="overlay",
+        bargap=0.15,
+        legend_orientation="h",
+        legend_y=-0.2,
+        hovermode="x unified",
+        template="plotly_white",
+    )
+    fig.add_hline(y=0, line_width=1, line_dash="dot")
     return fig
+
 
 @app.callback(
     Output("subject-dropdown", "value"),
@@ -864,7 +1063,6 @@ def persist_default_subject(value):
 
 if __name__ == "__main__":
     app.run(debug=False)
-
 
 
 
