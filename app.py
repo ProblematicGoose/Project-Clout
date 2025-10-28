@@ -770,64 +770,62 @@ def toggle_momentum_custom(mode):
 # -----------------------------
 # Chart callbacks (subject + timeframe aware, using cached base datasets)
 # -----------------------------
+# --- SENTIMENT OVER TIME CALLBACK ---
 @app.callback(
-    Output("sentiment-graph", "figure"),
+    Output("timeseries-graph", "figure"),  # <-- keep your existing graph id here
     [
         Input("subject-dropdown", "value"),
-        Input("sentiment-range-mode", "value"),
-        Input("sentiment-custom-range", "start_date"),
-        Input("sentiment-custom-range", "end_date"),
+        Input("timeseries-range-mode", "value"),          # your radio group
+        Input("timeseries-custom-range", "start_date"),   # your datepicker
+        Input("timeseries-custom-range", "end_date"),
     ],
 )
-def update_sentiment_chart(subject, mode, custom_start, custom_end):
+def update_timeseries(subject, mode, custom_start, custom_end):
     fig = go.Figure()
+
     if not subject:
-        fig.update_layout(title="Select a subject to view data.", template="plotly_white")
+        fig.update_layout(
+            title="Select a subject to view sentiment over time.",
+            template="plotly_white",
+            xaxis_title="Date",
+            yaxis_title="Normalized Sentiment (0–10,000)",
+        )
         return fig
 
+    # Reuse the unified helper you already installed
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    # Fetch subject-wide data once; filter locally for speed
-    base_df = fetch_df_with_params(TIMESERIES_URL, {"subject": subject})
-    df = base_df.copy() if not base_df.empty else fetch_df(TIMESERIES_URL)
+    # Pull and normalize data from the API
+    df = fetch_timeseries_df(subject=subject, start_ts=start, end_ts=end)
 
-    if not df.empty:
-        if "SentimentDate" in df.columns:
-            df["SentimentDate"] = pd.to_datetime(df["SentimentDate"], errors="coerce")
-        elif "Date" in df.columns:
-            df = df.rename(columns={"Date": "SentimentDate"})
-            df["SentimentDate"] = pd.to_datetime(df["SentimentDate"], errors="coerce")
-
-        if "Subject" in df.columns:
-            df = df[df["Subject"].astype(str) == str(subject)]
-
-        if "SentimentDate" in df.columns:
-            mask = (df["SentimentDate"] >= start) & (df["SentimentDate"] <= end)
-            df = df[mask]
-
-    if not df.empty and {"SentimentDate", "NormalizedSentimentScore"}.issubset(df.columns):
-        df = df.sort_values("SentimentDate")
-        fig.add_trace(
-            go.Scatter(
-                x=df["SentimentDate"],
-                y=df["NormalizedSentimentScore"],
-                mode="lines+markers",
-                name=str(subject),
-            )
-        )
+    if df.empty:
         fig.update_layout(
-            title=f"Sentiment Over Time ({mode})",
+            title="No time series data in the selected range.",
+            template="plotly_white",
             xaxis_title="Date",
-            yaxis_title="Score",
-            yaxis=dict(range=[0, 10000]),
-            template="plotly_white",
+            yaxis_title="Normalized Sentiment (0–10,000)",
         )
-    else:
-        fig.update_layout(
-            title="No sentiment data available for the selected range.",
-            template="plotly_white",
-        )
+        return fig
+
+    df = df.sort_values("SentimentDate")
+
+    fig.add_trace(go.Scatter(
+        name=subject,
+        x=df["SentimentDate"],
+        y=df["NormalizedSentimentScore"],
+        mode="lines+markers",
+        hovertemplate="Date: %{x|%Y-%m-%d}<br>Score: %{y:.0f}<extra></extra>",
+    ))
+
+    fig.update_layout(
+        title="Sentiment Over Time",
+        template="plotly_white",
+        xaxis_title="Date",
+        yaxis_title="Normalized Sentiment (0–10,000)",
+        hovermode="x unified",
+    )
     return fig
+
 
 
 @app.callback(
