@@ -408,6 +408,24 @@ def latest_comments():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@flask_app.route("/api/subjects")
+def subjects():
+    """
+    Returns a canonical list of subjects for the UI dropdown.
+    Uses ElectedOfficialPhotos as the source of truth.
+    """
+    try:
+        rows = run_query("""
+            SELECT DISTINCT Subject
+            FROM ElectedOfficialPhotos
+            WHERE Subject IS NOT NULL
+            ORDER BY Subject
+        """)
+        # rows like [{'Subject': 'Ted Cruz'}, ...]
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # -----------------------------
 # Main (only if you run this module directly)
 # -----------------------------
