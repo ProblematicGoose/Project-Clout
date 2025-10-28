@@ -15,6 +15,7 @@ Flask API server for dashboard data.
 # App + DB
 # -----------------------------
 flask_app = Flask(__name__)
+app = flask_app
 flask_app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-key")
 
 # Local SQL Server connection (adjust if needed)
