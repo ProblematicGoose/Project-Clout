@@ -426,6 +426,103 @@ def subjects():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@flask_app.route("/api/constituent-asks")
+def constituent_asks():
+    """
+    Returns Top-N asks per subject from the latest 7-day window.
+
+    Query params:
+      - subjects: optional, comma-separated list (e.g., ?subjects=Ted%20Cruz,Bernie%20Sanders)
+      - top_n: optional, default 5 (allowed: 1..10)
+      - latest: 1 or 0; if 0, provide week_end=YYYY-MM-DD to select that window
+      - week_end: optional, YYYY-MM-DD, used when latest=0
+
+    Response rows:
+      Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
+    """
+    try:
+        # Parse inputs
+        subjects_param = request.args.get("subjects", "").strip()
+        subjects = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
+
+        try:
+            top_n = int(request.args.get("top_n", 5))
+        except ValueError:
+            top_n = 5
+        top_n = max(1, min(top_n, 10))
+
+        latest_flag = request.args.get("latest", "1").strip()
+        use_latest = (latest_flag != "0")
+
+        # Build subject IN (...) clause with parameter placeholders
+        params = []
+        subject_clause = ""
+        if subjects:
+            placeholders = ", ".join(["?"] * len(subjects))
+            subject_clause = f" AND a.Subject IN ({placeholders}) "
+            params.extend(subjects)
+
+        if use_latest:
+            # Latest window: WeekEndUTC = MAX(WeekEndUTC)
+            query = f"""
+                WITH Ranked AS (
+                    SELECT
+                        a.Subject, a.Ask, a.SupportCount, a.Confidence,
+                        a.WeekStartUTC, a.WeekEndUTC,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.Subject
+                            ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
+                        ) AS rn
+                    FROM dbo.ConstituentAsksLatest7Days a WITH (NOLOCK)
+                    WHERE a.WeekEndUTC = (SELECT MAX(WeekEndUTC) FROM dbo.ConstituentAsksLatest7Days)
+                    {subject_clause}
+                )
+                SELECT Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
+                FROM Ranked
+                WHERE rn <= ?
+                ORDER BY Subject, rn;
+            """
+            params.append(top_n)
+            rows = run_query(query, params=tuple(params) if params else (top_n,))
+            return jsonify(rows)
+        else:
+            # Specific window: require week_end=YYYY-MM-DD
+            week_end_str = request.args.get("week_end")
+            if not week_end_str:
+                return jsonify({"error": "When latest=0, you must provide week_end=YYYY-MM-DD"}), 400
+            try:
+                # Filter by full day of provided week_end
+                week_end_date = datetime.strptime(week_end_str, "%Y-%m-%d").date()
+                start_dt = datetime.combine(week_end_date, datetime.min.time())
+                end_dt = start_dt + timedelta(days=1)
+            except ValueError:
+                return jsonify({"error": "Invalid week_end format; use YYYY-MM-DD"}), 400
+
+            query = f"""
+                WITH Ranked AS (
+                    SELECT
+                        a.Subject, a.Ask, a.SupportCount, a.Confidence,
+                        a.WeekStartUTC, a.WeekEndUTC,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.Subject
+                            ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
+                        ) AS rn
+                    FROM dbo.ConstituentAsksLatest7Days a WITH (NOLOCK)
+                    WHERE a.WeekEndUTC >= ? AND a.WeekEndUTC < ?
+                    {subject_clause}
+                )
+                SELECT Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
+                FROM Ranked
+                WHERE rn <= ?
+                ORDER BY Subject, rn;
+            """
+            full_params = [start_dt, end_dt] + params + [top_n]
+            rows = run_query(query, params=tuple(full_params))
+            return jsonify(rows)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # -----------------------------
 # Main (only if you run this module directly)
 # -----------------------------

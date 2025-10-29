@@ -29,6 +29,7 @@ MENTION_COUNT_URL = f"{BASE_URL}/api/mention-counts"
 MOMENTUM_URL = f"{BASE_URL}/api/momentum"
 MENTION_COUNTS_DAILY_URL = f"{BASE_URL}/api/mention-counts-daily"
 LATEST_COMMENTS_URL = f"{BASE_URL}/api/latest-comments"  # NEW
+CONSTITUENT_ASKS_URL = f"{BASE_URL}/api/constituent-asks"
 import os
 from sqlalchemy import create_engine, text
 
@@ -587,6 +588,85 @@ def latest_comments_card(subject: str | None):
         style={"gridColumn": "1 / -1", "fontSize": "16px"},
     )
 
+def constituent_asks_card(subject: str | None, top_n: int = 5):
+    """
+    Renders a card listing up to top_n 'asks' for the selected subject
+    from the latest 7-day window, using /api/constituent-asks.
+    """
+    if not subject:
+        return html.Div(
+            [html.H2("Constituent Asks", className="center-text"),
+             html.Div("Select a subject to view asks.")],
+            className="dashboard-card",
+        )
+
+    # Fetch from API (latest window, specific subject)
+    params = {
+        "subjects": subject,
+        "top_n": str(max(1, min(int(top_n), 10))),
+        "latest": "1",
+    }
+    df = fetch_df_with_params(CONSTITUENT_ASKS_URL, params, timeout=6)
+
+    # Ensure columns
+    for col in ["Subject", "Ask", "SupportCount", "Confidence", "WeekStartUTC", "WeekEndUTC"]:
+        if col not in df.columns:
+            df[col] = None
+
+    # Build items
+    items = []
+    if not df.empty:
+        # Only rows belonging to this subject (defensive)
+        sdf = df[df["Subject"].astype(str) == str(subject)].copy()
+        # Add rank number display based on appearance order
+        for i, (_, r) in enumerate(sdf.head(top_n).iterrows(), start=1):
+            ask = (r.get("Ask") or "").strip()
+            support = r.get("SupportCount")
+            conf = r.get("Confidence")
+            support_badge = html.Span(
+                f"{int(support):,}" if pd.notna(support) else "0",
+                style={
+                    "background": "#eef",
+                    "border": "1px solid #ccd",
+                    "borderRadius": "10px",
+                    "padding": "2px 8px",
+                    "fontSize": "12px",
+                    "marginLeft": "8px",
+                },
+                title="Supporting comments in the last 7 days",
+            )
+            conf_txt = (f"{float(conf):.2f}" if pd.notna(conf) else "—")
+            conf_span = html.Span(
+                f"(conf {conf_txt})",
+                style={"color": "#888", "fontSize": "12px", "marginLeft": "6px"},
+                title="Heuristic confidence based on cluster size",
+            )
+            items.append(
+                html.Li(
+                    [
+                        html.Span(f"{i}. "),
+                        html.Span(ask or "(no recent constituent asks)"),
+                        support_badge,
+                        conf_span,
+                    ],
+                    style={"marginBottom": "8px"}
+                )
+            )
+
+    # Friendly placeholder
+    if not items:
+        items = [html.Li("(no recent constituent asks)")]  # shows when subject has zero asks in latest window
+
+    return html.Div(
+        [
+            html.H2("Constituent Asks (last 7 days)", className="center-text"),
+            html.Div(
+                html.Ul(items, style={"fontSize": "18px", "lineHeight": "1.4"}),
+                style={"minHeight": "120px"},
+            ),
+        ],
+        className="dashboard-card",
+    )
 
 
 # -----------------------------
@@ -660,6 +740,10 @@ def render_dashboard(subject):
             className="dashboard-card scorecard-container",
         )
     )
+
+    # ⬇️ INSERT THIS LINE RIGHT AFTER THE SCORECARD (here)
+    dynamic_cards.append(constituent_asks_card(subject, top_n=5))
+
 
     # Traits (cached) — newest 5 Positive and 5 Negative
     traits = fetch_df(TRAITS_URL)
