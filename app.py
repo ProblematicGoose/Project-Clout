@@ -285,6 +285,56 @@ def fetch_momentum_df(subject: str | None = None, start_date: str | None = None,
 
     return df.dropna(subset=["ActivityDate"])
 
+# --- FETCH HELPER (Sentiment Over Time) ---
+def fetch_timeseries_df(subject: str, start_ts, end_ts) -> pd.DataFrame:
+    """
+    Calls /api/timeseries with subject + date range and normalizes columns to:
+      ['SentimentDate', 'Subject', 'NormalizedSentimentScore']
+    start_ts/end_ts can be pandas Timestamps or 'YYYY-MM-DD' strings.
+    """
+    # clamp to YYYY-MM-DD for the API
+    def _fmt(d):
+        if hasattr(d, "date"):
+            return str(d.date())
+        s = str(d)
+        return s[:10]  # 'YYYY-MM-DD'
+
+    params = {
+        "subject": subject,
+        "start_date": _fmt(start_ts),
+        "end_date": _fmt(end_ts),
+    }
+
+    # Prefer your existing helper; fall back to requests if it's not defined
+    try:
+        df = fetch_df_with_params(TIMESERIES_URL, params, timeout=10)  # your app helper
+    except NameError:
+        r = requests.get(TIMESERIES_URL, params=params, timeout=10)
+        r.raise_for_status()
+        df = pd.DataFrame(r.json())
+
+    if df.empty:
+        return pd.DataFrame(columns=["SentimentDate", "Subject", "NormalizedSentimentScore"])
+
+    # Normalize column names from API variants
+    if "SentimentDate" not in df.columns:
+        for c in ("Date", "CreatedUTC", "ActivityDate"):
+            if c in df.columns:
+                df = df.rename(columns={c: "SentimentDate"})
+                break
+    if "NormalizedSentimentScore" not in df.columns:
+        for c in ("Score", "AvgSentiment", "AverageSentiment"):
+            if c in df.columns:
+                df = df.rename(columns={c: "NormalizedSentimentScore"})
+                break
+
+    # Coerce + sort
+    df["SentimentDate"] = pd.to_datetime(df["SentimentDate"], errors="coerce")
+    df = df.dropna(subset=["SentimentDate"])
+    df["NormalizedSentimentScore"] = pd.to_numeric(df["NormalizedSentimentScore"], errors="coerce")
+    return df[["SentimentDate", "Subject", "NormalizedSentimentScore"]].sort_values("SentimentDate")
+
+
 # --- DATE RANGE HELPER (for momentum controls) ---
 
 def date_range_from_mode(mode: str | None, custom_start: str | None, custom_end: str | None):
@@ -772,16 +822,17 @@ def toggle_momentum_custom(mode):
 # Chart callbacks (subject + timeframe aware, using cached base datasets)
 # -----------------------------
 # --- SENTIMENT OVER TIME CALLBACK ---
+# --- SENTIMENT OVER TIME CALLBACK ---
 @app.callback(
-    Output("timeseries-graph", "figure"),  # <-- keep your existing graph id here
+    Output("sentiment-graph", "figure"),
     [
         Input("subject-dropdown", "value"),
-        Input("timeseries-range-mode", "value"),          # your radio group
-        Input("timeseries-custom-range", "start_date"),   # your datepicker
-        Input("timeseries-custom-range", "end_date"),
+        Input("sentiment-range-mode", "value"),            # radio: Today / This Week / ...
+        Input("sentiment-custom-range", "start_date"),     # datepicker
+        Input("sentiment-custom-range", "end_date"),
     ],
 )
-def update_timeseries(subject, mode, custom_start, custom_end):
+def update_sentiment_over_time(subject, mode, custom_start, custom_end):
     fig = go.Figure()
 
     if not subject:
@@ -793,12 +844,10 @@ def update_timeseries(subject, mode, custom_start, custom_end):
         )
         return fig
 
-    # Reuse the unified helper you already installed
+    # unified helper you already have (supports Today/This Week/etc and 7d/30d/90d/custom)
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    # Pull and normalize data from the API
     df = fetch_timeseries_df(subject=subject, start_ts=start, end_ts=end)
-
     if df.empty:
         fig.update_layout(
             title="No time series data in the selected range.",
@@ -807,8 +856,6 @@ def update_timeseries(subject, mode, custom_start, custom_end):
             yaxis_title="Normalized Sentiment (0–10,000)",
         )
         return fig
-
-    df = df.sort_values("SentimentDate")
 
     fig.add_trace(go.Scatter(
         name=subject,
@@ -826,6 +873,7 @@ def update_timeseries(subject, mode, custom_start, custom_end):
         hovermode="x unified",
     )
     return fig
+
 
 
 
