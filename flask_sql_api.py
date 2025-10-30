@@ -412,19 +412,37 @@ def latest_comments():
 def subjects():
     """
     Returns a canonical list of subjects for the UI dropdown.
-    Uses ElectedOfficialPhotos as the source of truth.
+    Pulls from multiple sources so the list never shows up empty.
     """
     try:
-        rows = run_query("""
-            SELECT DISTINCT Subject
-            FROM ElectedOfficialPhotos
-            WHERE Subject IS NOT NULL
-            ORDER BY Subject
-        """)
-        # rows like [{'Subject': 'Ted Cruz'}, ...]
+        query = """
+            WITH AllSubjects AS (
+                SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
+                FROM ElectedOfficialPhotos WITH (NOLOCK)
+                WHERE Subject IS NOT NULL
+
+                UNION
+
+                SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
+                FROM WeeklySubjectStrategy WITH (NOLOCK)
+                WHERE Subject IS NOT NULL
+
+                UNION
+
+                SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
+                FROM ConstituentAsksLatest7Days WITH (NOLOCK)
+                WHERE Subject IS NOT NULL
+            )
+            SELECT Subject
+            FROM AllSubjects
+            WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
+            ORDER BY Subject;
+        """
+        rows = run_query(query)
         return jsonify(rows)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 @flask_app.route("/api/constituent-asks")
 def constituent_asks():
