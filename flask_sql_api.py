@@ -526,6 +526,9 @@ def constituent_asks():
 # -----------------------------
 # NEW API: Weekly Strategy (one per subject, latest window by default)
 # -----------------------------
+# -----------------------------
+# NEW API: Weekly Strategy (one per subject, latest window by default)
+# -----------------------------
 @flask_app.route("/api/weekly-strategy")
 def weekly_strategy():
     """
@@ -553,41 +556,37 @@ def weekly_strategy():
         subject_clause = ""
         if subjects:
             placeholders = ", ".join(["?"] * len(subjects))
-            subject_clause = f" AND s.Subject IN ({placeholders}) "
+            # CAST to NVARCHAR to be safe even if column is NTEXT
+            subject_clause = f" AND CONVERT(NVARCHAR(4000), s.Subject) IN ({placeholders}) "
             params.extend(subjects)
 
         if use_latest:
-            # Prefer the view if it exists; otherwise compute latest per subject
+            # Latest-per-subject via CTE
             query = f"""
-                IF OBJECT_ID('dbo.vWeeklySubjectStrategyLatest', 'V') IS NOT NULL
-                BEGIN
-                    SELECT
-                        Subject, StrategySummary, StrategyStatement, Rationale,
-                        SupportCount, Confidence, ActionabilityScore,
-                        WeekStartUTC, WeekEndUTC
-                    FROM dbo.vWeeklySubjectStrategyLatest s WITH (NOLOCK)
-                    WHERE 1=1
-                    {subject_clause}
-                    ORDER BY Subject;
-                END
-                ELSE
-                BEGIN
-                    WITH Latest AS (
-                        SELECT Subject, MAX(WeekEndUTC) AS LatestWE
-                        FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
-                        GROUP BY Subject
-                    )
+                WITH Latest AS (
+                    SELECT Subject, MAX(WeekEndUTC) AS LatestWE
+                    FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
+                    GROUP BY Subject
+                ),
+                Pick AS (
                     SELECT
                         s.Subject, s.StrategySummary, s.StrategyStatement, s.Rationale,
                         s.SupportCount, s.Confidence, s.ActionabilityScore,
-                        s.WeekStartUTC, s.WeekEndUTC
+                        s.WeekStartUTC, s.WeekEndUTC,
+                        ROW_NUMBER() OVER (PARTITION BY s.Subject ORDER BY s.Id DESC) AS rn
                     FROM dbo.WeeklySubjectStrategy s WITH (NOLOCK)
                     INNER JOIN Latest l
-                        ON l.Subject = s.Subject AND l.LatestWE = s.WeekEndUTC
+                      ON l.Subject = s.Subject AND l.LatestWE = s.WeekEndUTC
                     WHERE 1=1
-                    {subject_clause.replace('s.', 's.')}
-                    ORDER BY s.Subject;
-                END
+                    {subject_clause}
+                )
+                SELECT
+                    Subject, StrategySummary, StrategyStatement, Rationale,
+                    SupportCount, Confidence, ActionabilityScore,
+                    WeekStartUTC, WeekEndUTC
+                FROM Pick
+                WHERE rn = 1
+                ORDER BY Subject;
             """
             rows = run_query(query, params=tuple(params) if params else None)
             return jsonify(rows)
@@ -604,24 +603,21 @@ def weekly_strategy():
                 return jsonify({"error": "Invalid week_end format; use YYYY-MM-DD"}), 400
 
             query = f"""
-                WITH Ranked AS (
+                WITH Pick AS (
                     SELECT
                         s.Subject, s.StrategySummary, s.StrategyStatement, s.Rationale,
                         s.SupportCount, s.Confidence, s.ActionabilityScore,
                         s.WeekStartUTC, s.WeekEndUTC,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY s.Subject
-                            ORDER BY s.Id DESC
-                        ) AS rn
+                        ROW_NUMBER() OVER (PARTITION BY s.Subject ORDER BY s.Id DESC) AS rn
                     FROM dbo.WeeklySubjectStrategy s WITH (NOLOCK)
                     WHERE s.WeekEndUTC >= ? AND s.WeekEndUTC < ?
-                    {subject_clause.replace('s.', 's.')}
+                    {subject_clause}
                 )
                 SELECT
                     Subject, StrategySummary, StrategyStatement, Rationale,
                     SupportCount, Confidence, ActionabilityScore,
                     WeekStartUTC, WeekEndUTC
-                FROM Ranked
+                FROM Pick
                 WHERE rn = 1
                 ORDER BY Subject;
             """
@@ -630,7 +626,10 @@ def weekly_strategy():
             return jsonify(rows)
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Optional: uncomment to see full error in JSON while debugging
+        # return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
+
 
 
 # -----------------------------
