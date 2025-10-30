@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request, session, redirect
 import pyodbc
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import text
 
 """
@@ -522,6 +522,116 @@ def constituent_asks():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# -----------------------------
+# NEW API: Weekly Strategy (one per subject, latest window by default)
+# -----------------------------
+@flask_app.route("/api/weekly-strategy")
+def weekly_strategy():
+    """
+    Returns one strategy per subject (latest week by default).
+
+    Query params:
+      - subjects: optional, comma-separated list (e.g., ?subjects=Ted%20Cruz,Bernie%20Sanders)
+      - latest:   1 (default) or 0. If 0, provide week_end=YYYY-MM-DD
+      - week_end: optional, YYYY-MM-DD (used when latest=0)
+
+    Response columns:
+      Subject, StrategySummary, StrategyStatement, Rationale,
+      SupportCount, Confidence, ActionabilityScore,
+      WeekStartUTC, WeekEndUTC
+    """
+    try:
+        subjects_param = request.args.get("subjects", "").strip()
+        subjects = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
+
+        latest_flag = request.args.get("latest", "1").strip()
+        use_latest = (latest_flag != "0")
+
+        # Build optional IN (...) filter
+        params = []
+        subject_clause = ""
+        if subjects:
+            placeholders = ", ".join(["?"] * len(subjects))
+            subject_clause = f" AND s.Subject IN ({placeholders}) "
+            params.extend(subjects)
+
+        if use_latest:
+            # Prefer the view if it exists; otherwise compute latest per subject
+            query = f"""
+                IF OBJECT_ID('dbo.vWeeklySubjectStrategyLatest', 'V') IS NOT NULL
+                BEGIN
+                    SELECT
+                        Subject, StrategySummary, StrategyStatement, Rationale,
+                        SupportCount, Confidence, ActionabilityScore,
+                        WeekStartUTC, WeekEndUTC
+                    FROM dbo.vWeeklySubjectStrategyLatest s WITH (NOLOCK)
+                    WHERE 1=1
+                    {subject_clause}
+                    ORDER BY Subject;
+                END
+                ELSE
+                BEGIN
+                    WITH Latest AS (
+                        SELECT Subject, MAX(WeekEndUTC) AS LatestWE
+                        FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
+                        GROUP BY Subject
+                    )
+                    SELECT
+                        s.Subject, s.StrategySummary, s.StrategyStatement, s.Rationale,
+                        s.SupportCount, s.Confidence, s.ActionabilityScore,
+                        s.WeekStartUTC, s.WeekEndUTC
+                    FROM dbo.WeeklySubjectStrategy s WITH (NOLOCK)
+                    INNER JOIN Latest l
+                        ON l.Subject = s.Subject AND l.LatestWE = s.WeekEndUTC
+                    WHERE 1=1
+                    {subject_clause.replace('s.', 's.')}
+                    ORDER BY s.Subject;
+                END
+            """
+            rows = run_query(query, params=tuple(params) if params else None)
+            return jsonify(rows)
+        else:
+            # Specific week_end day
+            week_end_str = request.args.get("week_end")
+            if not week_end_str:
+                return jsonify({"error": "When latest=0, provide week_end=YYYY-MM-DD"}), 400
+            try:
+                we_date = datetime.strptime(week_end_str, "%Y-%m-%d").date()
+                start_dt = datetime.combine(we_date, datetime.min.time())
+                end_dt   = start_dt + timedelta(days=1)
+            except ValueError:
+                return jsonify({"error": "Invalid week_end format; use YYYY-MM-DD"}), 400
+
+            query = f"""
+                WITH Ranked AS (
+                    SELECT
+                        s.Subject, s.StrategySummary, s.StrategyStatement, s.Rationale,
+                        s.SupportCount, s.Confidence, s.ActionabilityScore,
+                        s.WeekStartUTC, s.WeekEndUTC,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY s.Subject
+                            ORDER BY s.Id DESC
+                        ) AS rn
+                    FROM dbo.WeeklySubjectStrategy s WITH (NOLOCK)
+                    WHERE s.WeekEndUTC >= ? AND s.WeekEndUTC < ?
+                    {subject_clause.replace('s.', 's.')}
+                )
+                SELECT
+                    Subject, StrategySummary, StrategyStatement, Rationale,
+                    SupportCount, Confidence, ActionabilityScore,
+                    WeekStartUTC, WeekEndUTC
+                FROM Ranked
+                WHERE rn = 1
+                ORDER BY Subject;
+            """
+            full_params = [start_dt, end_dt] + params
+            rows = run_query(query, params=tuple(full_params))
+            return jsonify(rows)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # -----------------------------
 # Main (only if you run this module directly)

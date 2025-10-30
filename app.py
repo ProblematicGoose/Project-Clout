@@ -30,6 +30,7 @@ MOMENTUM_URL = f"{BASE_URL}/api/momentum"
 MENTION_COUNTS_DAILY_URL = f"{BASE_URL}/api/mention-counts-daily"
 LATEST_COMMENTS_URL = f"{BASE_URL}/api/latest-comments"  # NEW
 CONSTITUENT_ASKS_URL = f"{BASE_URL}/api/constituent-asks"
+WEEKLY_STRATEGY_URL = f"{BASE_URL}/api/weekly-strategy"
 import os
 from sqlalchemy import create_engine, text
 
@@ -659,11 +660,86 @@ def constituent_asks_card(subject: str | None, top_n: int = 5):
 
     return html.Div(
         [
-            html.H2("Constituent Asks (last 7 days)", className="center-text"),
+            html.H2("Voice of the People (last 7 days)", className="center-text"),
             html.Div(
                 html.Ul(items, style={"fontSize": "18px", "lineHeight": "1.4"}),
                 style={"minHeight": "120px"},
             ),
+        ],
+        className="dashboard-card",
+    )
+
+def weekly_strategy_card(subject: str | None):
+    """
+    Renders a 'Weekly Strategy' card for the selected subject from /api/weekly-strategy.
+    Shows a headline (StrategySummary) and collapsible details for the long statement + rationale.
+    """
+    if not subject:
+        return html.Div(
+            [html.H2("Weekly Strategy", className="center-text"),
+             html.Div("Select a subject to view the weekly strategy.")],
+            className="dashboard-card",
+        )
+
+    # Fetch latest strategy for this subject (latest window per subject)
+    params = {"subjects": subject, "latest": "1"}
+    df = fetch_df_with_params(WEEKLY_STRATEGY_URL, params, timeout=6)
+
+    # Ensure expected columns
+    needed = [
+        "Subject", "StrategySummary", "StrategyStatement", "Rationale",
+        "SupportCount", "Confidence", "ActionabilityScore",
+        "WeekStartUTC", "WeekEndUTC"
+    ]
+    for c in needed:
+        if c not in df.columns:
+            df[c] = None
+
+    if df.empty:
+        body = html.Div("No strategy generated for this subject in the latest window.")
+        return html.Div([html.H2("Weekly Strategy", className="center-text"), body], className="dashboard-card")
+
+    # Filter defensively to this subject & take the first row
+    sdf = df[df["Subject"].astype(str) == str(subject)].copy()
+    if sdf.empty:
+        body = html.Div("No strategy generated for this subject in the latest window.")
+        return html.Div([html.H2("Weekly Strategy", className="center-text"), body], className="dashboard-card")
+
+    r = sdf.iloc[0]
+    summary   = (r.get("StrategySummary")   or "").strip()
+    statement = (r.get("StrategyStatement") or "").strip()
+    rationale = (r.get("Rationale")         or "").strip()
+    support   = r.get("SupportCount")
+    conf      = r.get("Confidence")
+    action    = r.get("ActionabilityScore")
+    win_start = r.get("WeekStartUTC")
+    win_end   = r.get("WeekEndUTC")
+
+    # Small meta row
+    meta_bits = []
+    if pd.notna(support): meta_bits.append(f"support={int(support):,}")
+    if pd.notna(conf):    meta_bits.append(f"conf={float(conf):.2f}")
+    if pd.notna(action):  meta_bits.append(f"actionable={float(action):.2f}")
+    if pd.notna(win_start) and pd.notna(win_end): meta_bits.append(f"window: {win_start} → {win_end}")
+    meta_line = " • ".join(meta_bits) if meta_bits else ""
+
+    # Use HTML <details> for collapsible content (Dash supports native tags)
+    details = html.Details([
+        html.Summary("Read full strategy"),
+        html.Div([
+            html.H4("Strategy Statement"),
+            dcc.Markdown(statement or "_(no statement)_"),
+            html.H4("Rationale", style={"marginTop": "14px"}),
+            dcc.Markdown(rationale or "_(no rationale)_"),
+        ], style={"marginTop": "10px"})
+    ])
+
+    return html.Div(
+        [
+            html.H2("Weekly Strategy", className="center-text"),
+            html.H3(summary or "(no strategy available)", style={"marginTop": "4px"}),
+            html.Div(meta_line, style={"color": "#666", "fontSize": "12px", "marginTop": "6px"}),
+            html.Div(details, style={"marginTop": "10px"}),
         ],
         className="dashboard-card",
     )
@@ -743,6 +819,7 @@ def render_dashboard(subject):
 
     # ⬇️ INSERT THIS LINE RIGHT AFTER THE SCORECARD (here)
     dynamic_cards.append(constituent_asks_card(subject, top_n=5))
+    dynamic_cards.append(weekly_strategy_card(subject))
 
 
     # Traits (cached) — newest 5 Positive and 5 Negative
