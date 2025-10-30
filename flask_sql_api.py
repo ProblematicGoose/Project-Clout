@@ -550,6 +550,12 @@ def constituent_asks():
 # -----------------------------
 # NEW API: Weekly Strategy (one per subject; latest window by default)
 # -----------------------------
+# -----------------------------
+# NEW API: Weekly Strategy (one per subject; latest window by default)
+# -----------------------------
+# -----------------------------
+# NEW API: Weekly Strategy (one per subject; latest window by default)
+# -----------------------------
 @flask_app.route("/api/weekly-strategy")
 def weekly_strategy():
     """
@@ -571,24 +577,17 @@ def weekly_strategy():
         latest_flag = request.args.get("latest", "1").strip()
         use_latest = (latest_flag != "0")
 
-        # Build optional filter list for the outer subject set
-        subject_filter = ""
-        params = []
-
-        if subjects:
-            placeholders = ", ".join(["?"] * len(subjects))
-            subject_filter = f"WHERE s.Subject IN ({placeholders})"
-            params.extend(subjects)
-
         if use_latest:
-            # Latest per subject using CROSS APPLY (TOP 1 ORDER BY WeekEndUTC, Id)
+            # Latest per subject via OUTER APPLY (WHERE must come AFTER APPLY)
+            params = tuple(subjects) if subjects else None
+            where_tail = ""
+            if subjects:
+                placeholders = ", ".join(["?"] * len(subjects))
+                where_tail = f"WHERE s.Subject IN ({placeholders})"
+
             query = f"""
-                WITH Subjects AS (
-                    SELECT DISTINCT Subject
-                    FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
-                )
                 SELECT
-                    w.Subject,
+                    COALESCE(w.Subject, s.Subject) AS Subject,
                     w.StrategySummary,
                     w.StrategyStatement,
                     w.Rationale,
@@ -597,38 +596,43 @@ def weekly_strategy():
                     w.ActionabilityScore,
                     w.WeekStartUTC,
                     w.WeekEndUTC
-                FROM Subjects s
-                {subject_filter}
-                CROSS APPLY (
-                    SELECT TOP 1 *
+                FROM (
+                    SELECT DISTINCT Subject
+                    FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
+                ) AS s
+                OUTER APPLY (
+                    SELECT TOP (1) *
                     FROM dbo.WeeklySubjectStrategy w WITH (NOLOCK)
                     WHERE w.Subject = s.Subject
                     ORDER BY w.WeekEndUTC DESC, w.Id DESC
-                ) w
-                ORDER BY w.Subject;
+                ) AS w
+                {where_tail}
+                ORDER BY s.Subject;
             """
-            rows = run_query(query, params=tuple(params) if params else None)
+            rows = run_query(query, params=params) if params else run_query(query)
             return jsonify(rows)
 
-        # Specific window: pick the most recent row *within that day* per subject
+        # Specific window per subject
         week_end_str = request.args.get("week_end")
         if not week_end_str:
             return jsonify({"error": "When latest=0, provide week_end=YYYY-MM-DD"}), 400
-
         try:
             we_date = datetime.strptime(week_end_str, "%Y-%m-%d").date()
             start_dt = datetime.combine(we_date, datetime.min.time())
-            end_dt   = start_dt + timedelta(days=1)
+            end_dt = start_dt + timedelta(days=1)
         except ValueError:
             return jsonify({"error": "Invalid week_end format; use YYYY-MM-DD"}), 400
 
+        params_list = [start_dt, end_dt]
+        where_tail = ""
+        if subjects:
+            placeholders = ", ".join(["?"] * len(subjects))
+            where_tail = f"AND s.Subject IN ({placeholders})"
+            params_list.extend(subjects)
+
         query = f"""
-            WITH Subjects AS (
-                SELECT DISTINCT Subject
-                FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
-            )
             SELECT
-                w.Subject,
+                COALESCE(w.Subject, s.Subject) AS Subject,
                 w.StrategySummary,
                 w.StrategyStatement,
                 w.Rationale,
@@ -637,24 +641,27 @@ def weekly_strategy():
                 w.ActionabilityScore,
                 w.WeekStartUTC,
                 w.WeekEndUTC
-            FROM Subjects s
-            {subject_filter}
-            CROSS APPLY (
-                SELECT TOP 1 *
+            FROM (
+                SELECT DISTINCT Subject
+                FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
+            ) AS s
+            OUTER APPLY (
+                SELECT TOP (1) *
                 FROM dbo.WeeklySubjectStrategy w WITH (NOLOCK)
                 WHERE w.Subject = s.Subject
                   AND w.WeekEndUTC >= ? AND w.WeekEndUTC < ?
                 ORDER BY w.WeekEndUTC DESC, w.Id DESC
-            ) w
-            ORDER BY w.Subject;
+            ) AS w
+            WHERE 1=1
+            {where_tail}
+            ORDER BY s.Subject;
         """
-        params = (params + [start_dt, end_dt]) if params else (start_dt, end_dt)
-        rows = run_query(query, params=tuple(params))
+        rows = run_query(query, params=tuple(params_list))
         return jsonify(rows)
 
     except Exception as e:
-        # While debugging, it's helpful to see the actual error:
         return jsonify({"error": str(e)}), 500
+
 
 
 

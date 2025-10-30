@@ -671,8 +671,9 @@ def constituent_asks_card(subject: str | None, top_n: int = 5):
 
 def weekly_strategy_card(subject: str | None):
     """
-    Renders a 'Weekly Strategy' card for the selected subject from /api/weekly-strategy.
-    Shows a headline (StrategySummary) and collapsible details for the long statement + rationale.
+    Weekly Strategy card (robust):
+    - Case/trim-insensitive subject matching
+    - If no rows for the subject, falls back to fetching all and picking best match
     """
     if not subject:
         return html.Div(
@@ -681,29 +682,59 @@ def weekly_strategy_card(subject: str | None):
             className="dashboard-card",
         )
 
-    # Fetch latest strategy for this subject (latest window per subject)
-    params = {"subjects": subject, "latest": "1"}
-    df = fetch_df_with_params(WEEKLY_STRATEGY_URL, params, timeout=6)
+    def _normalize(s):
+        return (s or "").strip().casefold()
 
-    # Ensure expected columns
+    target_norm = _normalize(subject)
+
+    # 1) Try direct fetch for this subject
+    params = {"subjects": subject, "latest": "1"}
+    df = fetch_df_with_params(WEEKLY_STRATEGY_URL, params, timeout=8)
+
     needed = [
-        "Subject", "StrategySummary", "StrategyStatement", "Rationale",
-        "SupportCount", "Confidence", "ActionabilityScore",
-        "WeekStartUTC", "WeekEndUTC"
+        "Subject","StrategySummary","StrategyStatement","Rationale",
+        "SupportCount","Confidence","ActionabilityScore",
+        "WeekStartUTC","WeekEndUTC"
     ]
     for c in needed:
         if c not in df.columns:
             df[c] = None
 
-    if df.empty:
-        body = html.Div("No strategy generated for this subject in the latest window.")
-        return html.Div([html.H2("Weekly Strategy", className="center-text"), body], className="dashboard-card")
+    # normalize column for robust filtering
+    if "Subject" in df.columns:
+        df["_norm"] = df["Subject"].astype(str).map(_normalize)
+    else:
+        df["_norm"] = ""
 
-    # Filter defensively to this subject & take the first row
-    sdf = df[df["Subject"].astype(str) == str(subject)].copy()
+    sdf = df[df["_norm"] == target_norm]
+
+    # 2) If empty, fetch all and try to find a close match
     if sdf.empty:
-        body = html.Div("No strategy generated for this subject in the latest window.")
-        return html.Div([html.H2("Weekly Strategy", className="center-text"), body], className="dashboard-card")
+        all_df = fetch_df_with_params(WEEKLY_STRATEGY_URL, {"latest": "1"}, timeout=8)
+        for c in needed:
+            if c not in all_df.columns:
+                all_df[c] = None
+        all_df["_norm"] = all_df["Subject"].astype(str).map(_normalize) if "Subject" in all_df.columns else ""
+        # Try exact normalized match
+        sdf = all_df[all_df["_norm"] == target_norm]
+        # If still empty, try startswith/contains
+        if sdf.empty and target_norm:
+            sdf = all_df[all_df["_norm"].str.startswith(target_norm)]
+        if sdf.empty and target_norm:
+            sdf = all_df[all_df["_norm"].str.contains(target_norm, na=False)]
+        # If still empty, take the first row as a last resort (so the card shows *something*)
+        if sdf.empty and not all_df.empty:
+            sdf = all_df.head(1)
+
+    if sdf.empty:
+        # Truly no data available anywhere
+        return html.Div(
+            [
+                html.H2("Weekly Strategy", className="center-text"),
+                html.Div("No weekly strategy found for this subject (latest window).", style={"color":"#666"}),
+            ],
+            className="dashboard-card",
+        )
 
     r = sdf.iloc[0]
     summary   = (r.get("StrategySummary")   or "").strip()
@@ -714,35 +745,37 @@ def weekly_strategy_card(subject: str | None):
     action    = r.get("ActionabilityScore")
     win_start = r.get("WeekStartUTC")
     win_end   = r.get("WeekEndUTC")
+    subj_name = r.get("Subject") or subject
 
-    # Small meta row
     meta_bits = []
-    if pd.notna(support): meta_bits.append(f"support={int(support):,}")
-    if pd.notna(conf):    meta_bits.append(f"conf={float(conf):.2f}")
-    if pd.notna(action):  meta_bits.append(f"actionable={float(action):.2f}")
-    if pd.notna(win_start) and pd.notna(win_end): meta_bits.append(f"window: {win_start} → {win_end}")
-    meta_line = " • ".join(meta_bits) if meta_bits else ""
+    if pd.notna(subj_name): meta_bits.append(str(subj_name))
+    if pd.notna(support):   meta_bits.append(f"support={int(support):,}")
+    if pd.notna(conf):      meta_bits.append(f"conf={float(conf):.2f}")
+    if pd.notna(action):    meta_bits.append(f"actionable={float(action):.2f}")
+    if pd.notna(win_start) and pd.notna(win_end):
+        meta_bits.append(f"window: {win_start} → {win_end}")
+    meta_line = " • ".join(meta_bits)
 
-    # Use HTML <details> for collapsible content (Dash supports native tags)
     details = html.Details([
         html.Summary("Read full strategy"),
         html.Div([
             html.H4("Strategy Statement"),
             dcc.Markdown(statement or "_(no statement)_"),
-            html.H4("Rationale", style={"marginTop": "14px"}),
+            html.H4("Rationale", style={"marginTop":"14px"}),
             dcc.Markdown(rationale or "_(no rationale)_"),
-        ], style={"marginTop": "10px"})
+        ], style={"marginTop":"10px"})
     ])
 
     return html.Div(
         [
             html.H2("Weekly Strategy", className="center-text"),
-            html.H3(summary or "(no strategy available)", style={"marginTop": "4px"}),
-            html.Div(meta_line, style={"color": "#666", "fontSize": "12px", "marginTop": "6px"}),
-            html.Div(details, style={"marginTop": "10px"}),
+            html.H3(summary or "(no strategy available)", style={"marginTop":"4px"}),
+            html.Div(meta_line, style={"color":"#666","fontSize":"12px","marginTop":"6px"}),
+            html.Div(details, style={"marginTop":"10px"}),
         ],
         className="dashboard-card",
     )
+
 
 
 # -----------------------------
