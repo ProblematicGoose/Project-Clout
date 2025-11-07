@@ -774,10 +774,7 @@ def weekly_strategy_card(subject: str | None):
     Output("dashboard-grid", "children"),
     Input("subject-dropdown", "value"),
 )
-@app.callback(
-    Output("dashboard-grid", "children"),
-    Input("subject-dropdown", "value"),
-)
+
 def render_dashboard(subject):
     dynamic_cards = []
 
@@ -1079,13 +1076,6 @@ def render_dashboard(subject):
 
     # 12) Done: return subject panels + charts
     return dynamic_cards + chart_cards()
-
-
-
-
-    # ⬇️ INSERT THIS LINE RIGHT AFTER THE SCORECARD (here)
-    dynamic_cards.append(constituent_asks_card(subject, top_n=5))
-    dynamic_cards.append(weekly_strategy_card(subject))
 
 
     # Traits (cached) — newest 5 Positive and 5 Negative
