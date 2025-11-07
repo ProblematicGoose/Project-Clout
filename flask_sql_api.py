@@ -9,7 +9,7 @@ Flask API server for dashboard data.
 - Connection pooling via SQLAlchemy engine
 - Named, parameterized SQL (sqlalchemy.text)
 - Uses CreatedDate (persisted) instead of CAST(CreatedUTC AS DATE)
-- Uses SubjectDailyActivity where appropriate for speed
+- Uses SubjectDailyActivity / SubjectDailySentiment where appropriate for speed
 """
 
 # -----------------------------
@@ -42,7 +42,9 @@ def run_query(sql: str, params=None):
         rows = conn.execute(text(sql), params or {})
         return [dict(r._mapping) for r in rows]
 
+# -----------------------------
 # Helpers
+# -----------------------------
 def parse_date_or_400(value: str, name: str):
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
@@ -56,7 +58,6 @@ def parse_date_or_400(value: str, name: str):
 def scorecard():
     try:
         data = run_query("EXEC GetSubjectSentimentScores")
-        # Normalize int type for front-end
         for row in data:
             if "NormalizedSentimentScore" in row and row["NormalizedSentimentScore"] is not None:
                 row["NormalizedSentimentScore"] = int(row["NormalizedSentimentScore"])
@@ -65,21 +66,21 @@ def scorecard():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Timeseries (subject/date aware; uses CreatedDate)
+# API: Timeseries (reads rollup)
 # -----------------------------
 @flask_app.route("/api/timeseries")
 def timeseries():
     try:
         subject = request.args.get("subject")
-        start   = request.args.get("start_date")
-        end     = request.args.get("end_date")
+        start = request.args.get("start_date")
+        end = request.args.get("end_date")
 
         params = {}
         where_parts = []
 
         if start and end:
             start_d = parse_date_or_400(start, "start_date")
-            end_d   = parse_date_or_400(end, "end_date")
+            end_d = parse_date_or_400(end, "end_date")
             where_parts.append("CreatedDate BETWEEN :start_d AND :end_d")
             params.update({"start_d": start_d, "end_d": end_d})
 
@@ -116,7 +117,7 @@ def traits():
             ORDER BY Subject, TraitType, CreatedUTC;
         """
         return jsonify(run_query(sql))
-    except Exception as e:api
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
@@ -153,12 +154,17 @@ def top_issues():
     try:
         with ENGINE.begin() as conn:
             latest_week = conn.execute(text("SELECT MAX(WeekStartDate) FROM WeeklyIdeologyTopics")).scalar()
-            rows = conn.execute(text("""
-                SELECT WeekStartDate, IdeologyLabel, Rank, Topic
-                FROM WeeklyIdeologyTopics
-                WHERE WeekStartDate = :wk
-                ORDER BY IdeologyLabel, Rank ASC;
-            """), {"wk": latest_week}).fetchall()
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT WeekStartDate, IdeologyLabel, Rank, Topic
+                    FROM WeeklyIdeologyTopics
+                    WHERE WeekStartDate = :wk
+                    ORDER BY IdeologyLabel, Rank ASC;
+                    """
+                ),
+                {"wk": latest_week},
+            ).fetchall()
 
         results = {"WeekStartDate": str(latest_week), "Liberal": [], "Conservative": []}
         for r in rows:
@@ -205,19 +211,19 @@ def subject_photos():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Mention counts (TOTAL by subject; uses SubjectDailyActivity)
+# API: Mention counts (TOTAL by subject; rollup)
 # -----------------------------
 @flask_app.route("/api/mention-counts")
 def mention_counts():
     try:
         start = request.args.get("start_date")
-        end   = request.args.get("end_date")
+        end = request.args.get("end_date")
 
         params = {}
         where_date = ""
         if start and end:
             start_d = parse_date_or_400(start, "start_date")
-            end_d   = parse_date_or_400(end, "end_date")
+            end_d = parse_date_or_400(end, "end_date")
             where_date = "WHERE CreatedDate BETWEEN :start_d AND :end_d"
             params.update({"start_d": start_d, "end_d": end_d})
 
@@ -235,21 +241,21 @@ def mention_counts():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Momentum (subject/date aware; uses CreatedDate)
+# API: Momentum (reads rollup)
 # -----------------------------
 @flask_app.route("/api/momentum")
 def momentum():
     try:
         subject = request.args.get("subject")
-        start   = request.args.get("start_date")
-        end     = request.args.get("end_date")
+        start = request.args.get("start_date")
+        end = request.args.get("end_date")
 
         params = {}
         where_parts = []
 
         if start and end:
             start_d = parse_date_or_400(start, "start_date")
-            end_d   = parse_date_or_400(end, "end_date")
+            end_d = parse_date_or_400(end, "end_date")
             where_parts.append("CreatedDate BETWEEN :start_d AND :end_d")
             params.update({"start_d": start_d, "end_d": end_d})
 
@@ -275,22 +281,21 @@ def momentum():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 # -----------------------------
-# API: Mention counts by day (per subject; uses SubjectDailyActivity)
+# API: Mention counts by day (per subject; rollup)
 # -----------------------------
 @flask_app.route("/api/mention-counts-daily")
 def mention_counts_daily():
     subject = request.args.get("subject")
-    start   = request.args.get("start_date") or "2025-01-01"
-    end     = request.args.get("end_date") or datetime.now().strftime("%Y-%m-%d")
+    start = request.args.get("start_date") or "2025-01-01"
+    end = request.args.get("end_date") or datetime.now().strftime("%Y-%m-%d")
 
     if not subject:
         return jsonify({"error": "Missing 'subject' parameter"}), 400
 
     try:
         start_d = parse_date_or_400(start, "start_date")
-        end_d   = parse_date_or_400(end, "end_date")
+        end_d = parse_date_or_400(end, "end_date")
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
 
@@ -302,8 +307,14 @@ def mention_counts_daily():
         ORDER BY [Date];
     """
     rows = run_query(sql, {"subject": subject, "start_d": start_d, "end_d": end_d})
-    # Normalize date to ISO string
-    data = [{"Subject": r["Subject"], "Date": r["Date"].isoformat(), "MentionCount": int(r["MentionCount"])} for r in rows]
+    data = [
+        {
+            "Subject": r["Subject"],
+            "Date": r["Date"].isoformat(),
+            "MentionCount": int(r["MentionCount"]),
+        }
+        for r in rows
+    ]
     return jsonify(data)
 
 # -----------------------------
@@ -313,7 +324,6 @@ def mention_counts_daily():
 def latest_comments():
     subject = request.args.get("subject")
 
-    # clamp limit 1..50
     try:
         limit = int(request.args.get("limit", 10))
     except ValueError:
@@ -358,7 +368,13 @@ def latest_comments():
     """
     rows = run_query(sql, params)
     data = [
-        {"Source": r["Source"], "Comment": r["Comment"], "CreatedUTC": r["CreatedUTC"].isoformat(), "URL": r["URL"], "Subject": r["Subject"]}
+        {
+            "Source": r["Source"],
+            "Comment": r["Comment"],
+            "CreatedUTC": r["CreatedUTC"].isoformat(),
+            "URL": r["URL"],
+            "Subject": r["Subject"],
+        }
         for r in rows
     ]
     return jsonify(data)
@@ -415,7 +431,7 @@ def constituent_asks():
     """
     try:
         subjects_param = request.args.get("subjects", "").strip()
-        subjects = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
+        subjects_list = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
 
         try:
             top_n = int(request.args.get("top_n", 5))
@@ -426,13 +442,12 @@ def constituent_asks():
         latest_flag = request.args.get("latest", "1").strip()
         use_latest = (latest_flag != "0")
 
-        # Build dynamic IN (:s0, :s1, ...)
         in_clause = ""
         params = {"top_n": top_n}
-        if subjects:
-            bind_names = [f"s{i}" for i in range(len(subjects))]
+        if subjects_list:
+            bind_names = [f"s{i}" for i in range(len(subjects_list))]
             in_clause = " AND a.Subject IN (" + ", ".join(f":{b}" for b in bind_names) + ") "
-            params.update({b: subjects[i] for i, b in enumerate(bind_names)})
+            params.update({b: subjects_list[i] for i, b in enumerate(bind_names)})
 
         if use_latest:
             sql = f"""
@@ -455,16 +470,13 @@ def constituent_asks():
             """
             return jsonify(run_query(sql, params))
 
-        # Specific window path
         week_end_str = request.args.get("week_end")
         if not week_end_str:
             return jsonify({"error": "When latest=0, you must provide week_end=YYYY-MM-DD"}), 400
-        try:
-            we_date = parse_date_or_400(week_end_str, "week_end")
-            start_dt = datetime.combine(we_date, datetime.min.time())
-            end_dt = start_dt + timedelta(days=1)
-        except ValueError as ve:
-            return jsonify({"error": str(ve)}), 400
+
+        we_date = parse_date_or_400(week_end_str, "week_end")
+        start_dt = datetime.combine(we_date, datetime.min.time())
+        end_dt = start_dt + timedelta(days=1)
 
         params.update({"start_dt": start_dt, "end_dt": end_dt})
         sql = f"""
@@ -486,11 +498,13 @@ def constituent_asks():
             ORDER BY Subject, rn;
         """
         return jsonify(run_query(sql, params))
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Weekly Strategy (one per subject; latest window by default)
+# API: Weekly Strategy
 # -----------------------------
 @flask_app.route("/api/weekly-strategy")
 def weekly_strategy():
@@ -502,18 +516,17 @@ def weekly_strategy():
     """
     try:
         subjects_param = request.args.get("subjects", "").strip()
-        subjects = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
+        subjects_list = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
 
         latest_flag = request.args.get("latest", "1").strip()
         use_latest = (latest_flag != "0")
 
-        # Build dynamic IN list
         in_clause = ""
         params = {}
-        if subjects:
-            bind_names = [f"s{i}" for i in range(len(subjects))]
+        if subjects_list:
+            bind_names = [f"s{i}" for i in range(len(subjects_list))]
             in_clause = "WHERE s.Subject IN (" + ", ".join(f":{b}" for b in bind_names) + ")"
-            params.update({b: subjects[i] for i, b in enumerate(bind_names)})
+            params.update({b: subjects_list[i] for i, b in enumerate(bind_names)})
 
         if use_latest:
             sql = f"""
@@ -539,7 +552,6 @@ def weekly_strategy():
             """
             return jsonify(run_query(sql, params))
 
-        # Specific window
         week_end_str = request.args.get("week_end")
         if not week_end_str:
             return jsonify({"error": "When latest=0, provide week_end=YYYY-MM-DD"}), 400
@@ -549,12 +561,11 @@ def weekly_strategy():
         end_dt = start_dt + timedelta(days=1)
 
         params.update({"start_dt": start_dt, "end_dt": end_dt})
-        # If subjects present, we’ll add AND .. IN (...) after WHERE 1=1
         in_clause_specific = ""
-        if subjects:
-            bind_names = [f"s{i}" for i in range(len(subjects))]
+        if subjects_list:
+            bind_names = [f"s{i}" for i in range(len(subjects_list))]
             in_clause_specific = " AND s.Subject IN (" + ", ".join(f":{b}" for b in bind_names) + ")"
-            params.update({b: subjects[i] for i, b in enumerate(bind_names)})
+            params.update({b: subjects_list[i] for i, b in enumerate(bind_names)})
 
         sql = f"""
             SELECT
@@ -590,6 +601,7 @@ def weekly_strategy():
 # -----------------------------
 if __name__ == "__main__":
     flask_app.run(host="0.0.0.0", port=5050, debug=False)
+
 
 
 
