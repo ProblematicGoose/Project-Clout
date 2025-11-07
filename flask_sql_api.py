@@ -54,6 +54,107 @@ def parse_date_or_400(value: str, name: str):
 # -----------------------------
 # API: Scorecard (stored proc)
 # -----------------------------
+
+@flask_app.route("/api/subject-bundle")
+def subject_bundle():
+    subject = request.args.get("subject")
+    start = request.args.get("start_date")
+    end = request.args.get("end_date")
+    if not subject: return jsonify({"error":"subject required"}), 400
+
+    # parse dates (reuse your helper)
+    start_d = parse_date_or_400(start, "start_date") if start else None
+    end_d   = parse_date_or_400(end,   "end_date")   if end   else None
+
+    params = {"subject": subject}
+    if start_d and end_d:
+        params.update({"start_d": start_d, "end_d": end_d})
+        where_dates = "AND CreatedDate BETWEEN :start_d AND :end_d"
+    else:
+        where_dates = ""
+
+    with ENGINE.begin() as conn:
+        # 1) timeseries & momentum from rollup
+        ts = conn.execute(text(f"""
+            SELECT CreatedDate AS SentimentDate,
+                   CAST(ROUND((ISNULL(AvgSentiment,0)+1.0)*5000.0,0) AS INT) AS NormalizedSentimentScore
+            FROM dbo.SubjectDailySentiment
+            WHERE Subject=:subject {where_dates}
+            ORDER BY SentimentDate
+        """), params).fetchall()
+
+        mom = conn.execute(text(f"""
+            SELECT CreatedDate AS ActivityDate, MentionCount, AvgSentiment
+            FROM dbo.SubjectDailySentiment
+            WHERE Subject=:subject {where_dates}
+            ORDER BY ActivityDate
+        """), params).fetchall()
+
+        # 2) weekly strategy (latest)
+        strat = conn.execute(text("""
+            SELECT TOP (1) StrategySummary, StrategyStatement, Rationale,
+                           SupportCount, Confidence, ActionabilityScore,
+                           WeekStartUTC, WeekEndUTC
+            FROM dbo.WeeklySubjectStrategy
+            WHERE Subject = :subject
+            ORDER BY WeekEndUTC DESC, Id DESC
+        """), {"subject": subject}).fetchone()
+
+        # 3) asks (top 5 latest)
+        asks = conn.execute(text("""
+            WITH Ranked AS (
+              SELECT a.Ask, a.SupportCount, a.Confidence, a.WeekStartUTC, a.WeekEndUTC,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY a.Subject
+                       ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC) rn
+              FROM dbo.ConstituentAsksLatest7Days a
+              WHERE a.Subject=:subject
+                AND a.WeekEndUTC = (SELECT MAX(WeekEndUTC) FROM dbo.ConstituentAsksLatest7Days)
+            )
+            SELECT Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
+            FROM Ranked WHERE rn <= 5
+            ORDER BY rn
+        """), {"subject": subject}).fetchall()
+
+        # 4) photos (one or few)
+        photos = conn.execute(text("""
+            SELECT TOP 3 PhotoURL, OfficeTitle, State, Party, SourceWebsite
+            FROM ElectedOfficialPhotos WHERE Subject=:subject
+            ORDER BY PhotoURL
+        """), {"subject": subject}).fetchall()
+
+        # 5) latest comments (trim!)
+        comments = conn.execute(text("""
+            WITH C AS (
+              SELECT 'Reddit'  AS Source, CAST(Body AS NVARCHAR(MAX))   Comment, CreatedUTC, URL
+              FROM dbo.RedditCommentsUSSenate WHERE Subject=:subject
+              UNION ALL
+              SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
+              FROM dbo.BlueskyCommentsUSSenate WHERE Subject=:subject
+              UNION ALL
+              SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
+              FROM dbo.YouTubeComments yc LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID=yc.VideoID
+              WHERE yc.Subject=:subject
+            )
+            SELECT TOP 5 Source, Comment, CreatedUTC, URL
+            FROM C ORDER BY CreatedUTC DESC
+        """), {"subject": subject}).fetchall()
+
+    # shape JSON
+    j = {
+        "timeseries": [{"Date": r[0].isoformat(), "Score": int(r[1])} for r in ts],
+        "momentum":   [{"Date": r[0].isoformat(), "MentionCount": int(r[1]), "AvgSentiment": float(r[2] or 0)} for r in mom],
+        "strategy":   (dict(zip(strat.keys(), strat)) if strat else None),
+        "asks":       [dict(zip(c.keys(), c)) for c in asks],
+        "photos":     [dict(zip(p.keys(), p)) for p in photos],
+        "latest_comments": [
+            {"Source": c[0], "Comment": c[1], "CreatedUTC": c[2].isoformat(), "URL": c[3]} for c in comments
+        ]
+    }
+    return jsonify(j)
+
+
+
 @flask_app.route("/api/scorecard")
 def scorecard():
     try:
