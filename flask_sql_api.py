@@ -55,42 +55,48 @@ def parse_date_or_400(value: str, name: str):
 # API: Scorecard (stored proc)
 # -----------------------------
 
+# -----------------------------
+# API: Subject bundle (one call per subject)
+# -----------------------------
 @flask_app.route("/api/subject-bundle")
 def subject_bundle():
     subject = request.args.get("subject")
-    start = request.args.get("start_date")
-    end = request.args.get("end_date")
-    if not subject: return jsonify({"error":"subject required"}), 400
+    start   = request.args.get("start_date")
+    end     = request.args.get("end_date")
+    if not subject:
+        return jsonify({"error": "subject required"}), 400
 
-    # parse dates (reuse your helper)
-    start_d = parse_date_or_400(start, "start_date") if start else None
-    end_d   = parse_date_or_400(end,   "end_date")   if end   else None
-
+    # optional date window
+    where_dates = ""
     params = {"subject": subject}
-    if start_d and end_d:
+    if start and end:
+        try:
+            start_d = parse_date_or_400(start, "start_date")
+            end_d   = parse_date_or_400(end, "end_date")
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        where_dates = " AND CreatedDate BETWEEN :start_d AND :end_d "
         params.update({"start_d": start_d, "end_d": end_d})
-        where_dates = "AND CreatedDate BETWEEN :start_d AND :end_d"
-    else:
-        where_dates = ""
 
     with ENGINE.begin() as conn:
-        # 1) timeseries & momentum from rollup
-        ts = conn.execute(text(f"""
-            SELECT CreatedDate AS SentimentDate,
+        # Timeseries (normalized score) from rollup
+        ts_rows = conn.execute(text(f"""
+            SELECT CreatedDate,
                    CAST(ROUND((ISNULL(AvgSentiment,0)+1.0)*5000.0,0) AS INT) AS NormalizedSentimentScore
             FROM dbo.SubjectDailySentiment
             WHERE Subject=:subject {where_dates}
-            ORDER BY SentimentDate
+            ORDER BY CreatedDate
         """), params).fetchall()
 
-        mom = conn.execute(text(f"""
-            SELECT CreatedDate AS ActivityDate, MentionCount, AvgSentiment
+        # Momentum (mentions + avg sentiment) from rollup
+        mom_rows = conn.execute(text(f"""
+            SELECT CreatedDate, MentionCount, AvgSentiment
             FROM dbo.SubjectDailySentiment
             WHERE Subject=:subject {where_dates}
-            ORDER BY ActivityDate
+            ORDER BY CreatedDate
         """), params).fetchall()
 
-        # 2) weekly strategy (latest)
+        # Latest weekly strategy
         strat = conn.execute(text("""
             SELECT TOP (1) StrategySummary, StrategyStatement, Rationale,
                            SupportCount, Confidence, ActionabilityScore,
@@ -100,13 +106,14 @@ def subject_bundle():
             ORDER BY WeekEndUTC DESC, Id DESC
         """), {"subject": subject}).fetchone()
 
-        # 3) asks (top 5 latest)
+        # Top 5 asks for latest window
         asks = conn.execute(text("""
             WITH Ranked AS (
               SELECT a.Ask, a.SupportCount, a.Confidence, a.WeekStartUTC, a.WeekEndUTC,
                      ROW_NUMBER() OVER (
                        PARTITION BY a.Subject
-                       ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC) rn
+                       ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
+                     ) rn
               FROM dbo.ConstituentAsksLatest7Days a
               WHERE a.Subject=:subject
                 AND a.WeekEndUTC = (SELECT MAX(WeekEndUTC) FROM dbo.ConstituentAsksLatest7Days)
@@ -116,14 +123,15 @@ def subject_bundle():
             ORDER BY rn
         """), {"subject": subject}).fetchall()
 
-        # 4) photos (one or few)
+        # Photos (up to 3)
         photos = conn.execute(text("""
             SELECT TOP 3 PhotoURL, OfficeTitle, State, Party, SourceWebsite
-            FROM ElectedOfficialPhotos WHERE Subject=:subject
+            FROM dbo.ElectedOfficialPhotos
+            WHERE Subject=:subject
             ORDER BY PhotoURL
         """), {"subject": subject}).fetchall()
 
-        # 5) latest comments (trim!)
+        # Latest comments (trim to 5)
         comments = conn.execute(text("""
             WITH C AS (
               SELECT 'Reddit'  AS Source, CAST(Body AS NVARCHAR(MAX))   Comment, CreatedUTC, URL
@@ -133,25 +141,33 @@ def subject_bundle():
               FROM dbo.BlueskyCommentsUSSenate WHERE Subject=:subject
               UNION ALL
               SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
-              FROM dbo.YouTubeComments yc LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID=yc.VideoID
+              FROM dbo.YouTubeComments yc
+              LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
               WHERE yc.Subject=:subject
             )
             SELECT TOP 5 Source, Comment, CreatedUTC, URL
             FROM C ORDER BY CreatedUTC DESC
         """), {"subject": subject}).fetchall()
 
-    # shape JSON
-    j = {
-        "timeseries": [{"Date": r[0].isoformat(), "Score": int(r[1])} for r in ts],
-        "momentum":   [{"Date": r[0].isoformat(), "MentionCount": int(r[1]), "AvgSentiment": float(r[2] or 0)} for r in mom],
-        "strategy":   (dict(zip(strat.keys(), strat)) if strat else None),
-        "asks":       [dict(zip(c.keys(), c)) for c in asks],
-        "photos":     [dict(zip(p.keys(), p)) for p in photos],
+    # Shape JSON
+    out = {
+        "timeseries": [
+            {"Date": r[0].isoformat(), "Score": int(r[1])} for r in ts_rows
+        ],
+        "momentum": [
+            {"Date": r[0].isoformat(), "MentionCount": int(r[1]), "AvgSentiment": float(r[2] or 0)}
+            for r in mom_rows
+        ],
+        "strategy": (dict(zip(strat.keys(), strat)) if strat else None),
+        "asks":     [dict(zip(a.keys(), a)) for a in asks],
+        "photos":   [dict(zip(p.keys(), p)) for p in photos],
         "latest_comments": [
-            {"Source": c[0], "Comment": c[1], "CreatedUTC": c[2].isoformat(), "URL": c[3]} for c in comments
-        ]
+            {"Source": c[0], "Comment": c[1], "CreatedUTC": c[2].isoformat(), "URL": c[3]}
+            for c in comments
+        ],
     }
-    return jsonify(j)
+    return jsonify(out)
+
 
 
 
