@@ -1,14 +1,15 @@
-from flask import Flask, jsonify, request, session, redirect
-import pyodbc
-import pandas as pd
+from flask import Flask, jsonify, request
 import os
+import urllib.parse
+from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
-from sqlalchemy import text
 
 """
 Flask API server for dashboard data.
-- Includes YouTube across time series, momentum, mention counts, and latest comments.
-- Adds optional subject + date filtering to /api/momentum and /api/timeseries for performance.
+- Connection pooling via SQLAlchemy engine
+- Named, parameterized SQL (sqlalchemy.text)
+- Uses CreatedDate (persisted) instead of CAST(CreatedUTC AS DATE)
+- Uses SubjectDailyActivity where appropriate for speed
 """
 
 # -----------------------------
@@ -18,7 +19,7 @@ flask_app = Flask(__name__)
 app = flask_app
 flask_app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-key")
 
-# Local SQL Server connection (adjust if needed)
+# Local SQL Server connection
 CONN_STR = (
     "DRIVER={ODBC Driver 18 for SQL Server};"
     "SERVER=DESKTOP-VUKR5KV;"
@@ -27,20 +28,26 @@ CONN_STR = (
     "TrustServerCertificate=yes;"
 )
 
-def run_query(query: str, params=None):
-    """Helper: run ad-hoc SQL and return list[dict]."""
-    conn = pyodbc.connect(CONN_STR)
+ENGINE = create_engine(
+    "mssql+pyodbc:///?odbc_connect=" + urllib.parse.quote_plus(CONN_STR),
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
+
+def run_query(sql: str, params=None):
+    """Execute SQL and return list[dict] with connection pooling."""
+    with ENGINE.begin() as conn:
+        rows = conn.execute(text(sql), params or {})
+        return [dict(r._mapping) for r in rows]
+
+# Helpers
+def parse_date_or_400(value: str, name: str):
     try:
-        cur = conn.cursor()
-        if params:
-            cur.execute(query, params)
-        else:
-            cur.execute(query)
-        cols = [c[0] for c in cur.description]
-        rows = cur.fetchall()
-        return [dict(zip(cols, r)) for r in rows]
-    finally:
-        conn.close()
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except Exception:
+        raise ValueError(f"Invalid {name} format. Use YYYY-MM-DD.")
 
 # -----------------------------
 # API: Scorecard (stored proc)
@@ -49,7 +56,7 @@ def run_query(query: str, params=None):
 def scorecard():
     try:
         data = run_query("EXEC GetSubjectSentimentScores")
-        # Make sure the front-end sees ints
+        # Normalize int type for front-end
         for row in data:
             if "NormalizedSentimentScore" in row and row["NormalizedSentimentScore"] is not None:
                 row["NormalizedSentimentScore"] = int(row["NormalizedSentimentScore"])
@@ -58,7 +65,7 @@ def scorecard():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Timeseries (subject/date aware, includes YouTube)
+# API: Timeseries (subject/date aware; uses CreatedDate)
 # -----------------------------
 @flask_app.route("/api/timeseries")
 def timeseries():
@@ -67,36 +74,33 @@ def timeseries():
         start   = request.args.get("start_date")
         end     = request.args.get("end_date")
 
-        date_where = ""
+        params = {}
+        where_parts = []
+
         if start and end:
-            try:
-                datetime.strptime(start, "%Y-%m-%d")
-                datetime.strptime(end, "%Y-%m-%d")
-                date_where = f"WHERE CreatedUTC BETWEEN '{start}' AND '{end}'"
-            except ValueError:
-                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+            start_d = parse_date_or_400(start, "start_date")
+            end_d   = parse_date_or_400(end, "end_date")
+            where_parts.append("CreatedDate BETWEEN :start_d AND :end_d")
+            params.update({"start_d": start_d, "end_d": end_d})
 
-        subject_where = "WHERE Subject = ?" if subject else ""
+        if subject:
+            where_parts.append("Subject = :subject")
+            params["subject"] = subject
 
-        query = f"""
+        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        sql = f"""
             SELECT
-                CAST(SentimentDate AS DATE) AS SentimentDate,
+                CreatedDate AS SentimentDate,
                 Subject,
-                CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
-            FROM (
-                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where}
-                UNION ALL
-                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
-                UNION ALL
-                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
-            ) AS Combined
-            {subject_where}
-            GROUP BY CAST(SentimentDate AS DATE), Subject
+                CAST(ROUND((ISNULL(AvgSentiment, 0) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
+            FROM dbo.SubjectDailySentiment
+            {where_sql}
             ORDER BY SentimentDate ASC, Subject ASC;
         """
-        if subject:
-            return jsonify(run_query(query, params=(subject,)))
-        return jsonify(run_query(query))
+        return jsonify(run_query(sql, params))
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -106,13 +110,13 @@ def timeseries():
 @flask_app.route("/api/traits")
 def traits():
     try:
-        query = """
+        sql = """
             SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
             FROM SubjectTraitSummary
-            ORDER BY Subject, TraitType, CreatedUTC
+            ORDER BY Subject, TraitType, CreatedUTC;
         """
-        return jsonify(run_query(query))
-    except Exception as e:
+        return jsonify(run_query(sql))
+    except Exception as e:api
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
@@ -121,7 +125,7 @@ def traits():
 @flask_app.route("/api/bill-sentiment")
 def bill_sentiment():
     try:
-        query = """
+        sql = """
             SELECT
                 BillName,
                 CAST(ROUND(AVG(SentimentScore), 2) AS FLOAT) AS AverageSentimentScore,
@@ -137,7 +141,7 @@ def bill_sentiment():
             GROUP BY BillName
             ORDER BY AverageSentimentScore DESC;
         """
-        return jsonify(run_query(query))
+        return jsonify(run_query(sql))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -147,28 +151,18 @@ def bill_sentiment():
 @flask_app.route("/api/top-issues")
 def top_issues():
     try:
-        conn = pyodbc.connect(CONN_STR)
-        cur = conn.cursor()
-        cur.execute("SELECT MAX(WeekStartDate) FROM WeeklyIdeologyTopics")
-        latest_week = cur.fetchone()[0]
+        with ENGINE.begin() as conn:
+            latest_week = conn.execute(text("SELECT MAX(WeekStartDate) FROM WeeklyIdeologyTopics")).scalar()
+            rows = conn.execute(text("""
+                SELECT WeekStartDate, IdeologyLabel, Rank, Topic
+                FROM WeeklyIdeologyTopics
+                WHERE WeekStartDate = :wk
+                ORDER BY IdeologyLabel, Rank ASC;
+            """), {"wk": latest_week}).fetchall()
 
-        cur.execute("""
-            SELECT WeekStartDate, IdeologyLabel, Rank, Topic
-            FROM WeeklyIdeologyTopics
-            WHERE WeekStartDate = ?
-            ORDER BY IdeologyLabel, Rank ASC
-        """, (latest_week,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        results = {
-            "WeekStartDate": str(latest_week),
-            "Liberal": [],
-            "Conservative": []
-        }
+        results = {"WeekStartDate": str(latest_week), "Liberal": [], "Conservative": []}
         for r in rows:
-            results[r.IdeologyLabel].append({"Rank": r.Rank, "Topic": r.Topic})
+            results[r[1]].append({"Rank": r[2], "Topic": r[3]})
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -179,7 +173,7 @@ def top_issues():
 @flask_app.route("/api/common-ground-issues")
 def common_ground_issues():
     try:
-        query = """
+        sql = """
             WITH Latest AS (
                 SELECT Subject, MAX(GeneratedDate) AS LatestGeneratedDate
                 FROM CommonGroundIssues
@@ -188,10 +182,10 @@ def common_ground_issues():
             SELECT c.Subject, c.IssueRank, c.Issue, c.Explanation, c.GeneratedDate
             FROM CommonGroundIssues c
             INNER JOIN Latest l
-                ON c.Subject = l.Subject AND c.GeneratedDate = l.LatestGeneratedDate
+              ON c.Subject = l.Subject AND c.GeneratedDate = l.LatestGeneratedDate
             ORDER BY c.Subject, c.IssueRank;
         """
-        return jsonify(run_query(query))
+        return jsonify(run_query(sql))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -201,17 +195,17 @@ def common_ground_issues():
 @flask_app.route("/api/subject-photos")
 def subject_photos():
     try:
-        query = """
+        sql = """
             SELECT Subject, PhotoURL, OfficeTitle, State, Party, SourceWebsite
             FROM ElectedOfficialPhotos
-            ORDER BY Subject
+            ORDER BY Subject;
         """
-        return jsonify(run_query(query))
+        return jsonify(run_query(sql))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Mention counts (includes YouTube)
+# API: Mention counts (TOTAL by subject; uses SubjectDailyActivity)
 # -----------------------------
 @flask_app.route("/api/mention-counts")
 def mention_counts():
@@ -219,31 +213,29 @@ def mention_counts():
         start = request.args.get("start_date")
         end   = request.args.get("end_date")
 
-        where_clause = ""
+        params = {}
+        where_date = ""
         if start and end:
-            where_clause = f"WHERE CreatedUTC BETWEEN '{start}' AND '{end}'"
+            start_d = parse_date_or_400(start, "start_date")
+            end_d   = parse_date_or_400(end, "end_date")
+            where_date = "WHERE CreatedDate BETWEEN :start_d AND :end_d"
+            params.update({"start_d": start_d, "end_d": end_d})
 
-        query = f"""
-            SELECT Subject, COUNT(*) AS MentionCount FROM (
-                SELECT Subject, CreatedUTC FROM dbo.RedditCommentsUSSenate {where_clause}
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.RedditPostsUSSenate {where_clause}
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.BlueskyCommentsUSSenate {where_clause}
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.BlueskyPostsUSSenate {where_clause}
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.YouTubeComments {where_clause}
-            ) AS AllMentions
+        sql = f"""
+            SELECT Subject, SUM(MentionCount) AS MentionCount
+            FROM dbo.SubjectDailyActivity
+            {where_date}
             GROUP BY Subject
             ORDER BY MentionCount DESC;
         """
-        return jsonify(run_query(query))
+        return jsonify(run_query(sql, params))
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# API: Momentum (subject/date aware, includes YouTube)
+# API: Momentum (subject/date aware; uses CreatedDate)
 # -----------------------------
 @flask_app.route("/api/momentum")
 def momentum():
@@ -252,42 +244,40 @@ def momentum():
         start   = request.args.get("start_date")
         end     = request.args.get("end_date")
 
-        where_clause = ""
+        params = {}
+        where_parts = []
+
         if start and end:
-            try:
-                datetime.strptime(start, "%Y-%m-%d")
-                datetime.strptime(end, "%Y-%m-%d")
-                where_clause = f"WHERE CreatedUTC BETWEEN '{start}' AND '{end}'"
-            except ValueError:
-                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+            start_d = parse_date_or_400(start, "start_date")
+            end_d   = parse_date_or_400(end, "end_date")
+            where_parts.append("CreatedDate BETWEEN :start_d AND :end_d")
+            params.update({"start_d": start_d, "end_d": end_d})
 
-        subject_clause = "WHERE Subject = ?" if subject else ""
+        if subject:
+            where_parts.append("Subject = :subject")
+            params["subject"] = subject
 
-        query = f"""
+        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        sql = f"""
             SELECT
                 Subject,
-                CAST(CreatedUTC AS DATE) AS ActivityDate,
-                COUNT(*) AS MentionCount,
-                AVG(SentimentScore) AS AvgSentiment
-            FROM (
-                SELECT Subject, SentimentScore, CreatedUTC FROM dbo.RedditCommentsUSSenate {where_clause}
-                UNION ALL
-                SELECT Subject, SentimentScore, CreatedUTC FROM dbo.BlueskyCommentsUSSenate {where_clause}
-                UNION ALL
-                SELECT Subject, SentimentScore, CreatedUTC FROM dbo.YouTubeComments {where_clause}
-            ) AS AllActivity
-            {subject_clause}
-            GROUP BY Subject, CAST(CreatedUTC AS DATE)
+                CreatedDate AS ActivityDate,
+                MentionCount,
+                AvgSentiment
+            FROM dbo.SubjectDailySentiment
+            {where_sql}
             ORDER BY Subject, ActivityDate;
         """
-        if subject:
-            return jsonify(run_query(query, params=(subject,)))
-        return jsonify(run_query(query))
+        return jsonify(run_query(sql, params))
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 # -----------------------------
-# API: Mention counts by day (subject)
+# API: Mention counts by day (per subject; uses SubjectDailyActivity)
 # -----------------------------
 @flask_app.route("/api/mention-counts-daily")
 def mention_counts_daily():
@@ -299,43 +289,22 @@ def mention_counts_daily():
         return jsonify({"error": "Missing 'subject' parameter"}), 400
 
     try:
-        start_dt = datetime.fromisoformat(start)
-        end_dt   = datetime.fromisoformat(end)
-    except Exception:
-        return jsonify({"error": "Invalid date format (use YYYY-MM-DD)"}), 400
+        start_d = parse_date_or_400(start, "start_date")
+        end_d   = parse_date_or_400(end, "end_date")
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
 
-    try:
-        conn = pyodbc.connect(CONN_STR)
-        cur = conn.cursor()
-        query = """
-            SELECT
-                Subject,
-                CAST(CreatedUTC AS DATE) AS [Date],
-                COUNT(*) AS MentionCount
-            FROM (
-                SELECT Subject, CreatedUTC FROM dbo.RedditCommentsUSSenate
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.RedditPostsUSSenate
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.BlueskyCommentsUSSenate
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.BlueskyPostsUSSenate
-                UNION ALL
-                SELECT Subject, CreatedUTC FROM dbo.YouTubeComments
-            ) AS combined
-            WHERE Subject = ?
-              AND CreatedUTC BETWEEN ? AND ?
-            GROUP BY Subject, CAST(CreatedUTC AS DATE)
-            ORDER BY [Date];
-        """
-        cur.execute(query, (subject, start_dt, end_dt))
-        rows = cur.fetchall()
-        conn.close()
-
-        data = [{"Subject": r.Subject, "Date": r.Date.isoformat(), "MentionCount": r.MentionCount} for r in rows]
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    sql = """
+        SELECT Subject, CreatedDate AS [Date], MentionCount
+        FROM dbo.SubjectDailyActivity
+        WHERE Subject = :subject
+          AND CreatedDate BETWEEN :start_d AND :end_d
+        ORDER BY [Date];
+    """
+    rows = run_query(sql, {"subject": subject, "start_d": start_d, "end_d": end_d})
+    # Normalize date to ISO string
+    data = [{"Subject": r["Subject"], "Date": r["Date"].isoformat(), "MentionCount": int(r["MentionCount"])} for r in rows]
+    return jsonify(data)
 
 # -----------------------------
 # API: Latest comments (includes YouTube video URL join)
@@ -343,6 +312,7 @@ def mention_counts_daily():
 @flask_app.route("/api/latest-comments")
 def latest_comments():
     subject = request.args.get("subject")
+
     # clamp limit 1..50
     try:
         limit = int(request.args.get("limit", 10))
@@ -350,64 +320,52 @@ def latest_comments():
         limit = 10
     limit = max(1, min(limit, 50))
 
-    try:
-        conn = pyodbc.connect(CONN_STR)
-        cur = conn.cursor()
-        query = f"""
-            WITH Combined AS (
-                SELECT
-                    'Reddit' AS Source,
-                    CAST(Body AS NVARCHAR(MAX))      AS Comment,
-                    CAST(CreatedUTC AS DATETIME)     AS CreatedUTC,
-                    CAST(URL AS NVARCHAR(4000))      AS URL,
-                    CAST(Subject AS NVARCHAR(255))   AS Subject
-                FROM dbo.RedditCommentsUSSenate
-                UNION ALL
-                SELECT
-                    'Bluesky' AS Source,
-                    CAST([Text] AS NVARCHAR(MAX))    AS Comment,
-                    CAST(CreatedUTC AS DATETIME)     AS CreatedUTC,
-                    CAST(URL AS NVARCHAR(4000))      AS URL,
-                    CAST(Subject AS NVARCHAR(255))   AS Subject
-                FROM dbo.BlueskyCommentsUSSenate
-                UNION ALL
-                SELECT
-                    'YouTube' AS Source,
-                    CAST(yc.[Text] AS NVARCHAR(MAX))   AS Comment,
-                    CAST(yc.CreatedUTC AS DATETIME)    AS CreatedUTC,
-                    CAST(yv.URL AS NVARCHAR(4000))     AS URL,
-                    CAST(yc.Subject AS NVARCHAR(255))  AS Subject
-                FROM dbo.YouTubeComments yc
-                LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
-            )
-            SELECT TOP {limit}
-                Source, Comment, CreatedUTC, URL, Subject
-            FROM Combined
-            { "WHERE Subject = ?" if subject else "" }
-            ORDER BY CreatedUTC DESC;
-        """
-        params = (subject,) if subject else ()
-        cur.execute(query, params)
-        rows = cur.fetchall()
-        conn.close()
+    params = {}
+    where_subject = ""
+    if subject:
+        where_subject = "WHERE Subject = :subject"
+        params["subject"] = subject
 
-        def fmt_ts(dt):
-            try:
-                return dt.strftime("%#m/%#d/%y %#I:%M %p")  # Windows
-            except Exception:
-                try:
-                    return dt.strftime("%-m/%-d/%y %-I:%M %p")  # Unix
-                except Exception:
-                    return dt.isoformat(sep=" ")
+    sql = f"""
+        WITH Combined AS (
+            SELECT 'Reddit' AS Source,
+                   CAST(Body AS NVARCHAR(MAX)) AS Comment,
+                   CAST(CreatedUTC AS DATETIME) AS CreatedUTC,
+                   CAST(URL AS NVARCHAR(4000)) AS URL,
+                   CAST(Subject AS NVARCHAR(255)) AS Subject
+            FROM dbo.RedditCommentsUSSenate
+            UNION ALL
+            SELECT 'Bluesky',
+                   CAST([Text] AS NVARCHAR(MAX)),
+                   CAST(CreatedUTC AS DATETIME),
+                   CAST(URL AS NVARCHAR(4000)),
+                   CAST(Subject AS NVARCHAR(255))
+            FROM dbo.BlueskyCommentsUSSenate
+            UNION ALL
+            SELECT 'YouTube',
+                   CAST(yc.[Text] AS NVARCHAR(MAX)),
+                   CAST(yc.CreatedUTC AS DATETIME),
+                   CAST(yv.URL AS NVARCHAR(4000)),
+                   CAST(yc.Subject AS NVARCHAR(255))
+            FROM dbo.YouTubeComments yc
+            LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
+        )
+        SELECT TOP {limit}
+            Source, Comment, CreatedUTC, URL, Subject
+        FROM Combined
+        {where_subject}
+        ORDER BY CreatedUTC DESC;
+    """
+    rows = run_query(sql, params)
+    data = [
+        {"Source": r["Source"], "Comment": r["Comment"], "CreatedUTC": r["CreatedUTC"].isoformat(), "URL": r["URL"], "Subject": r["Subject"]}
+        for r in rows
+    ]
+    return jsonify(data)
 
-        data = [
-            {"Source": r.Source, "Comment": r.Comment, "Timestamp": fmt_ts(r.CreatedUTC), "URL": r.URL}
-            for r in rows
-        ]
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# -----------------------------
+# API: Subjects list for UI dropdown
+# -----------------------------
 @flask_app.route("/api/subjects")
 def subjects():
     """
@@ -415,7 +373,7 @@ def subjects():
     Pulls from multiple sources so the list never shows up empty.
     """
     try:
-        query = """
+        sql = """
             WITH AllSubjects AS (
                 SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
                 FROM ElectedOfficialPhotos WITH (NOLOCK)
@@ -438,28 +396,24 @@ def subjects():
             WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
             ORDER BY Subject;
         """
-        rows = run_query(query)
+        rows = run_query(sql)
         return jsonify(rows)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+# -----------------------------
+# API: Constituent Asks (Top-N per subject)
+# -----------------------------
 @flask_app.route("/api/constituent-asks")
 def constituent_asks():
     """
-    Returns Top-N asks per subject from the latest 7-day window.
-
     Query params:
-      - subjects: optional, comma-separated list (e.g., ?subjects=Ted%20Cruz,Bernie%20Sanders)
-      - top_n: optional, default 5 (allowed: 1..10)
-      - latest: 1 or 0; if 0, provide week_end=YYYY-MM-DD to select that window
-      - week_end: optional, YYYY-MM-DD, used when latest=0
-
-    Response rows:
-      Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
+      - subjects: optional comma-separated list (e.g., ?subjects=Ted%20Cruz,Bernie%20Sanders)
+      - top_n: optional, default 5 (1..10)
+      - latest: 1 (default) or 0; if 0, provide week_end=YYYY-MM-DD
+      - week_end: optional, used when latest=0
     """
     try:
-        # Parse inputs
         subjects_param = request.args.get("subjects", "").strip()
         subjects = [s.strip() for s in subjects_param.split(",") if s.strip()] if subjects_param else []
 
@@ -472,17 +426,16 @@ def constituent_asks():
         latest_flag = request.args.get("latest", "1").strip()
         use_latest = (latest_flag != "0")
 
-        # Build subject IN (...) clause with parameter placeholders
-        params = []
-        subject_clause = ""
+        # Build dynamic IN (:s0, :s1, ...)
+        in_clause = ""
+        params = {"top_n": top_n}
         if subjects:
-            placeholders = ", ".join(["?"] * len(subjects))
-            subject_clause = f" AND a.Subject IN ({placeholders}) "
-            params.extend(subjects)
+            bind_names = [f"s{i}" for i in range(len(subjects))]
+            in_clause = " AND a.Subject IN (" + ", ".join(f":{b}" for b in bind_names) + ") "
+            params.update({b: subjects[i] for i, b in enumerate(bind_names)})
 
         if use_latest:
-            # Latest window: WeekEndUTC = MAX(WeekEndUTC)
-            query = f"""
+            sql = f"""
                 WITH Ranked AS (
                     SELECT
                         a.Subject, a.Ask, a.SupportCount, a.Confidence,
@@ -493,82 +446,59 @@ def constituent_asks():
                         ) AS rn
                     FROM dbo.ConstituentAsksLatest7Days a WITH (NOLOCK)
                     WHERE a.WeekEndUTC = (SELECT MAX(WeekEndUTC) FROM dbo.ConstituentAsksLatest7Days)
-                    {subject_clause}
+                    {in_clause}
                 )
                 SELECT Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
                 FROM Ranked
-                WHERE rn <= ?
+                WHERE rn <= :top_n
                 ORDER BY Subject, rn;
             """
-            params.append(top_n)
-            rows = run_query(query, params=tuple(params) if params else (top_n,))
-            return jsonify(rows)
-        else:
-            # Specific window: require week_end=YYYY-MM-DD
-            week_end_str = request.args.get("week_end")
-            if not week_end_str:
-                return jsonify({"error": "When latest=0, you must provide week_end=YYYY-MM-DD"}), 400
-            try:
-                # Filter by full day of provided week_end
-                week_end_date = datetime.strptime(week_end_str, "%Y-%m-%d").date()
-                start_dt = datetime.combine(week_end_date, datetime.min.time())
-                end_dt = start_dt + timedelta(days=1)
-            except ValueError:
-                return jsonify({"error": "Invalid week_end format; use YYYY-MM-DD"}), 400
+            return jsonify(run_query(sql, params))
 
-            query = f"""
-                WITH Ranked AS (
-                    SELECT
-                        a.Subject, a.Ask, a.SupportCount, a.Confidence,
-                        a.WeekStartUTC, a.WeekEndUTC,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY a.Subject
-                            ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
-                        ) AS rn
-                    FROM dbo.ConstituentAsksLatest7Days a WITH (NOLOCK)
-                    WHERE a.WeekEndUTC >= ? AND a.WeekEndUTC < ?
-                    {subject_clause}
-                )
-                SELECT Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
-                FROM Ranked
-                WHERE rn <= ?
-                ORDER BY Subject, rn;
-            """
-            full_params = [start_dt, end_dt] + params + [top_n]
-            rows = run_query(query, params=tuple(full_params))
-            return jsonify(rows)
+        # Specific window path
+        week_end_str = request.args.get("week_end")
+        if not week_end_str:
+            return jsonify({"error": "When latest=0, you must provide week_end=YYYY-MM-DD"}), 400
+        try:
+            we_date = parse_date_or_400(week_end_str, "week_end")
+            start_dt = datetime.combine(we_date, datetime.min.time())
+            end_dt = start_dt + timedelta(days=1)
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
 
+        params.update({"start_dt": start_dt, "end_dt": end_dt})
+        sql = f"""
+            WITH Ranked AS (
+                SELECT
+                    a.Subject, a.Ask, a.SupportCount, a.Confidence,
+                    a.WeekStartUTC, a.WeekEndUTC,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY a.Subject
+                        ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
+                    ) AS rn
+                FROM dbo.ConstituentAsksLatest7Days a WITH (NOLOCK)
+                WHERE a.WeekEndUTC >= :start_dt AND a.WeekEndUTC < :end_dt
+                {in_clause}
+            )
+            SELECT Subject, Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
+            FROM Ranked
+            WHERE rn <= :top_n
+            ORDER BY Subject, rn;
+        """
+        return jsonify(run_query(sql, params))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
-# NEW API: Weekly Strategy (one per subject, latest window by default)
-# -----------------------------
-# -----------------------------
-# NEW API: Weekly Strategy (one per subject, latest window by default)
-# -----------------------------
-# -----------------------------
-# NEW API: Weekly Strategy (one per subject; latest window by default)
-# -----------------------------
-# -----------------------------
-# NEW API: Weekly Strategy (one per subject; latest window by default)
-# -----------------------------
-# -----------------------------
-# NEW API: Weekly Strategy (one per subject; latest window by default)
+# API: Weekly Strategy (one per subject; latest window by default)
 # -----------------------------
 @flask_app.route("/api/weekly-strategy")
 def weekly_strategy():
     """
-    Returns one strategy per subject.
-
     Query params:
-      - subjects: optional, comma-separated list (e.g., ?subjects=Ted%20Cruz,Bernie%20Sanders)
-      - latest:   1 (default) or 0. If 0, provide week_end=YYYY-MM-DD
-      - week_end: optional, YYYY-MM-DD (used when latest=0)
-
-    Columns:
-      Subject, StrategySummary, StrategyStatement, Rationale,
-      SupportCount, Confidence, ActionabilityScore, WeekStartUTC, WeekEndUTC
+      - subjects: optional comma-separated list
+      - latest: 1 (default) or 0; if 0, provide week_end=YYYY-MM-DD
+      - week_end: used when latest=0
     """
     try:
         subjects_param = request.args.get("subjects", "").strip()
@@ -577,15 +507,16 @@ def weekly_strategy():
         latest_flag = request.args.get("latest", "1").strip()
         use_latest = (latest_flag != "0")
 
-        if use_latest:
-            # Latest per subject via OUTER APPLY (WHERE must come AFTER APPLY)
-            params = tuple(subjects) if subjects else None
-            where_tail = ""
-            if subjects:
-                placeholders = ", ".join(["?"] * len(subjects))
-                where_tail = f"WHERE s.Subject IN ({placeholders})"
+        # Build dynamic IN list
+        in_clause = ""
+        params = {}
+        if subjects:
+            bind_names = [f"s{i}" for i in range(len(subjects))]
+            in_clause = "WHERE s.Subject IN (" + ", ".join(f":{b}" for b in bind_names) + ")"
+            params.update({b: subjects[i] for i, b in enumerate(bind_names)})
 
-            query = f"""
+        if use_latest:
+            sql = f"""
                 SELECT
                     COALESCE(w.Subject, s.Subject) AS Subject,
                     w.StrategySummary,
@@ -596,41 +527,36 @@ def weekly_strategy():
                     w.ActionabilityScore,
                     w.WeekStartUTC,
                     w.WeekEndUTC
-                FROM (
-                    SELECT DISTINCT Subject
-                    FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
-                ) AS s
+                FROM (SELECT DISTINCT Subject FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)) AS s
                 OUTER APPLY (
                     SELECT TOP (1) *
                     FROM dbo.WeeklySubjectStrategy w WITH (NOLOCK)
                     WHERE w.Subject = s.Subject
                     ORDER BY w.WeekEndUTC DESC, w.Id DESC
                 ) AS w
-                {where_tail}
+                {in_clause}
                 ORDER BY s.Subject;
             """
-            rows = run_query(query, params=params) if params else run_query(query)
-            return jsonify(rows)
+            return jsonify(run_query(sql, params))
 
-        # Specific window per subject
+        # Specific window
         week_end_str = request.args.get("week_end")
         if not week_end_str:
             return jsonify({"error": "When latest=0, provide week_end=YYYY-MM-DD"}), 400
-        try:
-            we_date = datetime.strptime(week_end_str, "%Y-%m-%d").date()
-            start_dt = datetime.combine(we_date, datetime.min.time())
-            end_dt = start_dt + timedelta(days=1)
-        except ValueError:
-            return jsonify({"error": "Invalid week_end format; use YYYY-MM-DD"}), 400
 
-        params_list = [start_dt, end_dt]
-        where_tail = ""
+        we_date = parse_date_or_400(week_end_str, "week_end")
+        start_dt = datetime.combine(we_date, datetime.min.time())
+        end_dt = start_dt + timedelta(days=1)
+
+        params.update({"start_dt": start_dt, "end_dt": end_dt})
+        # If subjects present, we’ll add AND .. IN (...) after WHERE 1=1
+        in_clause_specific = ""
         if subjects:
-            placeholders = ", ".join(["?"] * len(subjects))
-            where_tail = f"AND s.Subject IN ({placeholders})"
-            params_list.extend(subjects)
+            bind_names = [f"s{i}" for i in range(len(subjects))]
+            in_clause_specific = " AND s.Subject IN (" + ", ".join(f":{b}" for b in bind_names) + ")"
+            params.update({b: subjects[i] for i, b in enumerate(bind_names)})
 
-        query = f"""
+        sql = f"""
             SELECT
                 COALESCE(w.Subject, s.Subject) AS Subject,
                 w.StrategySummary,
@@ -641,36 +567,30 @@ def weekly_strategy():
                 w.ActionabilityScore,
                 w.WeekStartUTC,
                 w.WeekEndUTC
-            FROM (
-                SELECT DISTINCT Subject
-                FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
-            ) AS s
+            FROM (SELECT DISTINCT Subject FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)) AS s
             OUTER APPLY (
                 SELECT TOP (1) *
                 FROM dbo.WeeklySubjectStrategy w WITH (NOLOCK)
                 WHERE w.Subject = s.Subject
-                  AND w.WeekEndUTC >= ? AND w.WeekEndUTC < ?
+                  AND w.WeekEndUTC >= :start_dt AND w.WeekEndUTC < :end_dt
                 ORDER BY w.WeekEndUTC DESC, w.Id DESC
             ) AS w
             WHERE 1=1
-            {where_tail}
+            {in_clause_specific}
             ORDER BY s.Subject;
         """
-        rows = run_query(query, params=tuple(params_list))
-        return jsonify(rows)
-
+        return jsonify(run_query(sql, params))
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-
-
-
 # -----------------------------
-# Main (only if you run this module directly)
+# Main
 # -----------------------------
 if __name__ == "__main__":
     flask_app.run(host="0.0.0.0", port=5050, debug=False)
+
 
 
 

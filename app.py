@@ -51,7 +51,7 @@ server = flask_app
 # -----------------------------
 # Lightweight in-memory TTL cache (speeds up subject switches)
 # -----------------------------
-_TTL_SECONDS = 90  # adjust if you want longer/shorter freshness
+_TTL_SECONDS = 300  # adjust if you want longer/shorter freshness
 _CACHE: dict[str, tuple[float, object]] = {}
 
 from flask import session
@@ -1056,7 +1056,16 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
 
     start, end = date_range_from_mode(mode, custom_start, custom_end)
 
-    df = fetch_df_with_params(MENTION_COUNTS_DAILY_URL, {"subject": subject})
+    start, end = date_range_from_mode(mode, custom_start, custom_end)
+    df = fetch_df_with_params(
+        MENTION_COUNTS_DAILY_URL,
+        {
+            "subject": subject,
+            "start_date": str(start.date()),
+            "end_date": str(end.date()),
+        },
+        timeout=10,
+    )
 
     if df.empty or "MentionCount" not in df.columns:
         fig.update_layout(title="No mention data available for the selected range.", template="plotly_white")
@@ -1073,7 +1082,6 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
         return fig
 
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-    df = df[(df["Subject"].astype(str) == str(subject)) & (df[date_col] >= start.date()) & (df[date_col] <= end.date())]
 
     if df.empty:
         fig.update_layout(title="No mention data available for the selected range.", template="plotly_white")
