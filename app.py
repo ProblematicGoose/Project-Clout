@@ -781,64 +781,43 @@ def render_dashboard(subject):
         dynamic_cards.append(html.Div("Choose a subject to begin.", className="dashboard-card"))
         return dynamic_cards + chart_cards() + [latest_comments_card(None)]
 
-    # ---------------------------------
-    # 1) One-call subject bundle (30d)
-    # ---------------------------------
+    # ---------- 1) One-call subject bundle (last 30 days) ----------
     end = datetime.utcnow().date()
     start = end - timedelta(days=30)
     bundle = fetch_subject_bundle(subject, str(start), str(end)) or {}
 
-    # ---------------------------------
-    # 2) Global/cached datasets in parallel
-    # ---------------------------------
+    # ---------- 2) Shared datasets in parallel ----------
     urls = {
         "scorecard": SCORECARD_URL,
-        "traits": TRAITS_URL,
-        "bills": BILL_SENTIMENT_URL,
-        "common": COMMON_GROUND_URL,
+        "traits":    TRAITS_URL,
+        "bills":     BILL_SENTIMENT_URL,
+        "common":    COMMON_GROUND_URL,
+        "issues":    TOP_ISSUES_URL,
     }
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {k: ex.submit(fetch_df, v) for k, v in urls.items()}
-        results = {k: f.result() for k, f in futures.items()}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+        futures  = {k: ex.submit(fetch_df if k!="issues" else fetch_json, v) for k, v in urls.items()}
+        results  = {k: f.result() for k, f in futures.items()}
 
     scorecard = results["scorecard"]
-    traits_df = results["traits"]
-    bills_df = results["bills"]
-    common_df = results["common"]
+    traits_df = results["traits"]      # SubjectTraitSummary
+    bills_df  = results["bills"]       # NationalBillSentimentMentions (rolled up)
+    common_df = results["common"]      # CommonGroundIssues (latest per subject)
+    issues    = results["issues"] or {}  # WeeklyIdeologyTopics (Top Issues JSON)
 
-    # ---------------------------------
-    # 3) Scorecard tile (score + photo/meta)
-    # ---------------------------------
-    score, office, party, state, photo_url = 10000, "", "", "", None
-
-    # Sentiment score
+    # ---------- 3) Scorecard tile ----------
+    score, office, party, state, photo_url = 5000, "", "", "", None
     if not scorecard.empty and "Subject" in scorecard.columns:
         row = scorecard[scorecard["Subject"].astype(str) == str(subject)]
         if not row.empty and "NormalizedSentimentScore" in row.columns:
-            val = safe_first(row["NormalizedSentimentScore"], None)
-            score = coerce_int(val, default=5000)
+            score = coerce_int(safe_first(row["NormalizedSentimentScore"], None), default=5000)
 
-    # Prefer photo/meta from bundle
     photos = bundle.get("photos") or []
     if photos:
         p0 = photos[0]
         photo_url = p0.get("PhotoURL")
-        office = p0.get("OfficeTitle") or ""
-        party = p0.get("Party") or ""
-        state = p0.get("State") or ""
-    else:
-        # Optional fallback to a photos endpoint if you still keep one
-        try:
-            photo_df = fetch_df(PHOTOS_URL)
-            if not photo_df.empty and "Subject" in photo_df.columns:
-                meta = photo_df[photo_df["Subject"].astype(str) == str(subject)]
-                if not meta.empty:
-                    photo_url = safe_first(meta.get("PhotoURL", pd.Series([None])), None)
-                    office = (safe_first(meta.get("OfficeTitle", pd.Series([""])), "") or "")
-                    party  = (safe_first(meta.get("Party", pd.Series([""])), "") or "")
-                    state  = (safe_first(meta.get("State", pd.Series([""])), "") or "")
-        except Exception:
-            pass
+        office    = p0.get("OfficeTitle") or ""
+        party     = p0.get("Party") or ""
+        state     = p0.get("State") or ""
 
     color = "green" if score > 6000 else ("crimson" if score < 4000 else "orange")
     dynamic_cards.append(
@@ -859,37 +838,20 @@ def render_dashboard(subject):
         )
     )
 
-    # ---------------------------------
-    # 4) Weekly Strategy (bundle)
-    # ---------------------------------
+    # ---------- 4) Weekly Strategy (bundle) ----------
     strat = bundle.get("strategy") or {}
-    # Build the small subtitle line safely
     meta_parts = []
-    try:
-        if strat.get("SupportCount") is not None:
-            meta_parts.append(f"support={format(int(strat['SupportCount']), ',')}")
-    except Exception:
-        pass
-    try:
-        if strat.get("Confidence") is not None:
-            meta_parts.append(f"conf={float(strat['Confidence']):.2f}")
-    except Exception:
-        pass
-    try:
-        if strat.get("ActionabilityScore") is not None:
-            meta_parts.append(f"actionable={float(strat['ActionabilityScore']):.2f}")
-    except Exception:
-        pass
+    if strat.get("SupportCount") is not None:     meta_parts.append(f"support={format(int(strat['SupportCount']), ',')}")
+    if strat.get("Confidence") is not None:       meta_parts.append(f"conf={float(strat['Confidence']):.2f}")
+    if strat.get("ActionabilityScore") is not None: meta_parts.append(f"actionable={float(strat['ActionabilityScore']):.2f}")
     if strat.get("WeekStartUTC") and strat.get("WeekEndUTC"):
         meta_parts.append(f"window: {strat['WeekStartUTC']} → {strat['WeekEndUTC']}")
-    subtitle = " • ".join(meta_parts)
-
     dynamic_cards.append(
         html.Div(
             [
                 html.H2("Weekly Strategy", className="center-text"),
                 html.H3((strat.get("StrategySummary") or "(no strategy available)"), style={"marginTop": "4px"}),
-                html.Div(subtitle, style={"color": "#666", "fontSize": "12px", "marginTop": "6px"}),
+                html.Div(" • ".join(meta_parts), style={"color": "#666", "fontSize": "12px", "marginTop": "6px"}),
                 html.Details([
                     html.Summary("Read full strategy"),
                     html.Div([
@@ -904,9 +866,7 @@ def render_dashboard(subject):
         )
     )
 
-    # ---------------------------------
-    # 5) Constituent Asks (bundle)
-    # ---------------------------------
+    # ---------- 5) Constituent Asks (bundle) ----------
     asks = bundle.get("asks") or []
     dynamic_cards.append(
         html.Div(
@@ -924,9 +884,7 @@ def render_dashboard(subject):
         )
     )
 
-    # ---------------------------------
-    # 6) Subject Photos (bundle; up to 3)
-    # ---------------------------------
+    # ---------- 6) Subject Photos (bundle) ----------
     if photos:
         dynamic_cards.append(
             html.Div(
@@ -941,9 +899,7 @@ def render_dashboard(subject):
             )
         )
 
-    # ---------------------------------
-    # 7) Latest Comments (bundle)
-    # ---------------------------------
+    # ---------- 7) Latest Comments (bundle) ----------
     comments = bundle.get("latest_comments") or []
     rows = [
         html.Tr([
@@ -952,34 +908,132 @@ def render_dashboard(subject):
             html.Td(c.get("CreatedUTC", ""), style={"width": "14%", "verticalAlign": "top"}),
             html.Td(html.A("link", href=c.get("URL"), target="_blank") if c.get("URL") else "",
                     style={"width": "8%", "verticalAlign": "top"}),
-        ])
-        for c in comments
+        ]) for c in comments
     ] or [html.Tr([html.Td("No recent comments available.", colSpan=4)])]
-
     dynamic_cards.append(
         html.Div(
             [
                 html.H2("Latest Comments", className="center-text"),
                 html.Div(
                     html.Table(
-                        [
-                            html.Thead(html.Tr([html.Th("Source"), html.Th("Comment"), html.Th("Timestamp"), html.Th("URL")])),
-                            html.Tbody(rows),
-                        ],
-                        style={"width": "100%"},
+                        [html.Thead(html.Tr([html.Th("Source"), html.Th("Comment"), html.Th("Timestamp"), html.Th("URL")])),
+                         html.Tbody(rows)],
+                        style={"width":"100%"}
                     ),
-                    style={"maxHeight": "460px", "overflowY": "auto", "border": "1px solid #ddd", "padding": "6px"},
+                    style={"maxHeight":"460px","overflowY":"auto","border":"1px solid #ddd","padding":"6px"},
                 ),
             ],
             className="dashboard-card",
-            style={"gridColumn": "1 / -1", "fontSize": "16px"},
+            style={"gridColumn":"1 / -1","fontSize":"16px"},
         )
     )
 
-    # ---------------------------------
-    # 8) Subject panels + charts
-    # ---------------------------------
+    # ---------- 8) Behavioral Traits ----------
+    pos_list, neg_list = [], []
+    if not traits_df.empty and "Subject" in traits_df.columns:
+        subj_norm = str(subject).strip().casefold()
+        tsub = traits_df[traits_df["Subject"].astype(str).str.strip().str.casefold().eq(subj_norm)].copy()
+        if not tsub.empty:
+            # parse CreatedUTC robustly
+            s = tsub.get("CreatedUTC", pd.Series([], dtype="object")).astype(str).str.replace("T"," ",regex=False).str.replace("Z","",regex=False)
+            s = s.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)
+            tsub["CreatedUTC_parsed"] = pd.to_datetime(s, errors="coerce")
+            def newest5(df, kind):
+                kk = df[df["TraitType"].astype(str).str.strip().str.casefold().eq(kind.casefold())].copy()
+                kk = kk[kk["CreatedUTC_parsed"].notna()].sort_values("CreatedUTC_parsed", ascending=False).head(5)
+                return kk["TraitDescription"].dropna().astype(str).tolist()
+            pos_list = newest5(tsub, "Positive")
+            neg_list = newest5(tsub, "Negative")
+
+    dynamic_cards.append(
+        html.Div(
+            [
+                html.H2("Behavioral Traits", className="center-text"),
+                html.Div([
+                    html.H3("People like it when I...", style={"color": "green"}),
+                    html.Ul([html.Li(p) for p in pos_list]) if pos_list else html.Div("No recent positive traits."),
+                ], style={"marginBottom": "20px"}),
+                html.Div([
+                    html.H3("People don't like it when I...", style={"color": "crimson"}),
+                    html.Ul([html.Li(n) for n in neg_list]) if neg_list else html.Div("No recent negative traits."),
+                ]),
+            ],
+            className="dashboard-card",
+        )
+    )
+
+    # ---------- 9) Public Sentiment toward National Bills ----------
+    if bills_df.empty:
+        dynamic_cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
+    else:
+        for col in ["BillName","AverageSentimentScore","SentimentLabel"]:
+            if col not in bills_df.columns: bills_df[col] = None
+        dynamic_cards.append(
+            html.Div(
+                [
+                    html.H2("Public Sentiment Toward National Bills", className="center-text"),
+                    html.Table(
+                        [
+                            html.Thead([html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])]),
+                            html.Tbody([
+                                html.Tr([
+                                    html.Td(str(r["BillName"])),
+                                    html.Td("—" if pd.isna(r["AverageSentimentScore"]) else round(float(r["AverageSentimentScore"]),2)),
+                                    html.Td(str(r["SentimentLabel"])),
+                                ]) for _, r in bills_df.iterrows()
+                            ]),
+                        ], style={"width":"100%"}
+                    ),
+                ],
+                className="dashboard-card",
+            )
+        )
+
+    # ---------- 10) Ideology Topics (Top Issues) ----------
+    if issues and all(k in issues for k in ("Liberal","Conservative","WeekStartDate")):
+        dynamic_cards.append(
+            html.Div(
+                [
+                    html.H2(f"Top Issues (Week of {issues['WeekStartDate']})", className="center-text"),
+                    html.Div([
+                        html.H3("Conservative Topics", style={'color':'crimson'}),
+                        html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize":"20px"}) for t in issues["Conservative"]]),
+                        html.H3("Liberal Topics", style={'color':'blue','marginTop':'20px'}),
+                        html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize":"20px"}) for t in issues["Liberal"]]),
+                    ]),
+                ],
+                className="dashboard-card",
+            )
+        )
+
+    # ---------- 11) Common Ground Issues (filter to subject) ----------
+    if not common_df.empty and "Subject" in common_df.columns:
+        filtered = common_df[common_df["Subject"].astype(str).str.strip().str.casefold()
+                             .eq(str(subject).strip().casefold())]
+    else:
+        filtered = pd.DataFrame()
+
+    dynamic_cards.append(
+        html.Div(
+            [
+                html.H2("Common Ground Issues", className="center-text"),
+                (html.Ul([
+                    html.Li([
+                        html.Span(f"{r.get('IssueRank','')}. "),
+                        html.Span(f"{r.get('Issue','')}: "),
+                        html.Span(r.get("Explanation","")),
+                    ], className="common-ground-item")
+                    for _, r in filtered.iterrows()
+                ], className="common-ground-list")
+                 if not filtered.empty else html.Div("No common ground items for this subject (yet)."))
+            ],
+            className="dashboard-card",
+        )
+    )
+
+    # ---------- 12) Return cards + charts ----------
     return dynamic_cards + chart_cards()
+
 
 
 
