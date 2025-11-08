@@ -468,12 +468,24 @@ def mention_counts_daily():
         return jsonify({"error": str(ve)}), 400
 
     sql = """
-        SELECT Subject, CreatedDate AS [Date], MentionCount
-        FROM dbo.SubjectDailyActivity
-        WHERE Subject = :subject
-          AND CreatedDate BETWEEN :start_d AND :end_d
+        SELECT
+            CAST(SentimentDate AS DATE) AS [Date],
+            Subject,
+            COUNT(*) AS MentionCount
+        FROM (
+            SELECT Subject, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate
+            WHERE Subject = :subject AND CreatedUTC BETWEEN :start_d AND :end_d
+            UNION ALL
+            SELECT Subject, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate
+            WHERE Subject = :subject AND CreatedUTC BETWEEN :start_d AND :end_d
+            UNION ALL
+            SELECT Subject, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments
+            WHERE Subject = :subject AND CreatedUTC BETWEEN :start_d AND :end_d
+        ) AS Combined
+        GROUP BY CAST(SentimentDate AS DATE), Subject
         ORDER BY [Date];
     """
+
     rows = run_query(sql, {"subject": subject, "start_d": start_d, "end_d": end_d})
     data = [
         {
@@ -484,6 +496,7 @@ def mention_counts_daily():
         for r in rows
     ]
     return jsonify(data)
+
 
 # -----------------------------
 # API: Latest comments (includes YouTube video URL join)
