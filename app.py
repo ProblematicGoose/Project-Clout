@@ -101,21 +101,60 @@ def _cache_set(key: str, value: object):
 def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: str | None = None, timeout: int = 8) -> dict:
     if not subject:
         return {}
-    params = {"subject": subject}
-    if start_date: params["start_date"] = start_date
-    if end_date:   params["end_date"]   = end_date
+
+    subject_norm = str(subject).strip()
+    params = {"subject": subject_norm}
+    if start_date: params["start_date"] = str(start_date)
+    if end_date:   params["end_date"]   = str(end_date)
 
     query = urllib.parse.urlencode(params)
     url = f"{SUBJECT_BUNDLE_URL}?{query}"
-    cache_key = f"BUNDLE::{subject}::{params.get('start_date','')}::{params.get('end_date','')}"
+    print(f"[bundle] GET {url}")
+
+    cache_key = f"BUNDLE::{subject_norm}::{params.get('start_date','')}::{params.get('end_date','')}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         return cached
 
+    # 1) Try the real bundle endpoint
     data = fetch_json(url, timeout=timeout)
     if data:
-        _cache_set(cache_key, data)
-    return data
+        _cache_set(cache_key, data)   # ← cache server bundle
+        return data
+
+    # 2) Fallback: assemble bundle from existing endpoints
+    try:
+        ts_df = fetch_timeseries_df(subject_norm, params.get("start_date"), params.get("end_date"))
+        mo_df = fetch_momentum_df(subject_norm, params.get("start_date"), params.get("end_date"))
+        ws_df = fetch_df_with_params(WEEKLY_STRATEGY_URL, {"subjects": subject_norm, "latest": "1"}, timeout=timeout)
+        asks_df = fetch_df_with_params(CONSTITUENT_ASKS_URL, {"subjects": subject_norm, "top_n": 5, "latest": "1"}, timeout=timeout)
+        photos_df = fetch_df(PHOTOS_URL)
+        comments_df = fetch_df_with_params(LATEST_COMMENTS_URL, {"subject": subject_norm, "limit": 5}, timeout=timeout)
+
+        bundle = {
+            "timeseries": ([] if ts_df.empty else [
+                {"Date": pd.to_datetime(r["SentimentDate"]).date().isoformat(),
+                 "Score": int(r["NormalizedSentimentScore"])}
+                for _, r in ts_df.iterrows()
+            ]),
+            "momentum": ([] if mo_df.empty else [
+                {"Date": pd.to_datetime(r["ActivityDate"]).date().isoformat(),
+                 "MentionCount": int((r["MentionCount"] or 0)),
+                 "AvgSentiment": float((r["AvgSentiment"] or 0.0))}
+                for _, r in mo_df.iterrows()
+            ]),
+            "strategy": (ws_df.iloc[0].to_dict() if not ws_df.empty else None),
+            "asks": ([] if asks_df.empty else asks_df.to_dict(orient="records")),
+            "photos": ([] if photos_df.empty else photos_df[photos_df["Subject"].astype(str).eq(subject_norm)].head(3).to_dict(orient="records")),
+            "latest_comments": ([] if comments_df.empty else comments_df.to_dict(orient="records")),
+        }
+
+        _cache_set(cache_key, bundle)  # ← cache fallback bundle
+        return bundle
+    except Exception as e:
+        print(f"[bundle:fallback] error: {e}")
+        return {}
+
 
 # -----------------------------
 # Helpers (resilient caching)
