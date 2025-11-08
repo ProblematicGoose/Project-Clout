@@ -489,13 +489,11 @@ TIME_MODES = [
 app.layout = html.Div([
     html.H1("Sentiment Dashboard", style={"textAlign": "center", "paddingTop": "20px"}),
 
-    dcc.Interval(id="page-load-once", interval=250, n_intervals=0, max_intervals=1),
-
     # Persist per-browser as a fallback when user is not authenticated
     dcc.Store(id="local-default-subject", storage_type="local"),
 
     # One-time page-load trigger
-    dcc.Interval(id="page-load-once", max_intervals=1, interval=250),
+    dcc.Interval(id="page-load-once", interval=250, n_intervals=0, max_intervals=1),
     
 
     html.Div([
