@@ -50,6 +50,8 @@ from flask_sql_api import app as flask_app
 app = dash.Dash(__name__, server=flask_app)
 server = flask_app
 
+from flask_cors import CORS  # add near other imports
+
 
 
 # -----------------------------
@@ -1378,7 +1380,6 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
 
 @app.callback(
-    Output("subject-dropdown", "value"),
     [Input("page-load-once", "n_intervals")],
     prevent_initial_call=True
 )
@@ -1443,8 +1444,6 @@ def persist_default_subject(value):
         return {"default_subject": value}
 
 @app.callback(
-    Output("subject-dropdown", "options"),
-    Output("subject-dropdown", "value"),
     Input("page-load-once", "n_intervals"),
     State("subject-dropdown", "value"),
     prevent_initial_call=True,
@@ -1464,6 +1463,40 @@ def load_subject_options(_, current_value):
     # keep current if it’s still valid; otherwise pick the first
     value = current_value if current_value in subs else (subs[0] if subs else None)
     return options, value
+
+@app.callback(
+    Output("subject-dropdown", "options"),
+    Output("subject-dropdown", "value"),
+    Input("page-load-once", "n_intervals"),
+    State("local-default-subject", "data"),
+    State("subject-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def load_subject_options(_, saved_value, current_value):
+    # 1) fetch canonical subjects
+    df = fetch_df(SUBJECTS_URL, timeout=8)
+
+    # fallback to photos if /api/subjects is empty
+    if df.empty or "Subject" not in df.columns:
+        df = fetch_df(PHOTOS_URL, timeout=8)
+        if not df.empty and "Subject" in df.columns:
+            df = df[["Subject"]].dropna().drop_duplicates()
+        else:
+            return [], None
+
+    subs = sorted(df["Subject"].astype(str).str.strip().unique())
+    options = [{"label": s, "value": s} for s in subs if s]
+
+    # pick value: current (if still valid) -> saved from store -> first option
+    if current_value in subs:
+        value = current_value
+    elif saved_value in subs:
+        value = saved_value
+    else:
+        value = subs[0] if subs else None
+
+    return options, value
+
 
 if __name__ == "__main__":
     app.run(debug=False)
