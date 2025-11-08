@@ -16,7 +16,7 @@ _executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "http://127.0.0.1:8050"
+BASE_URL = "https://sentiment-dashboard.ngrok.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -45,7 +45,8 @@ engine = create_engine(DATABASE_URL)
 
 
 
-from flask_sql_api import app as flask_app
+from flask import Flask
+flask_app = Flask(__name__)
 app = dash.Dash(__name__, server=flask_app)
 server = flask_app
 
