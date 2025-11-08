@@ -1,5 +1,4 @@
 import time
-import dash
 import pandas as pd
 import urllib.parse
 import urllib.request
@@ -34,7 +33,6 @@ WEEKLY_STRATEGY_URL = f"{BASE_URL}/api/weekly-strategy"
 SUBJECT_BUNDLE_URL = f"{BASE_URL}/api/subject-bundle"
 SUBJECTS_URL = f"{BASE_URL}/api/subjects"
 
-import os
 from sqlalchemy import create_engine, text
 
 DATABASE_URL = os.getenv(
@@ -224,7 +222,6 @@ def start_of_today() -> datetime:
 
 # --- MOMENTUM MATH (helper) ---
 import numpy as np
-import pandas as pd
 
 def compute_momentum(df: pd.DataFrame, ema_fast: int = 7, ema_slow: int = 21, dead_zone: float = 0.05) -> pd.DataFrame:
     """
@@ -244,6 +241,9 @@ def compute_momentum(df: pd.DataFrame, ema_fast: int = 7, ema_slow: int = 21, de
         ])
 
     out = df.copy()
+    # Ensure Subject exists (some endpoints omit it)
+    if "Subject" not in out.columns:
+        out["Subject"] = "(single)"
     # Ensure types and ordering
     out["ActivityDate"] = pd.to_datetime(out["ActivityDate"], errors="coerce")
     out = out.dropna(subset=["ActivityDate"])
@@ -285,7 +285,6 @@ def compute_momentum(df: pd.DataFrame, ema_fast: int = 7, ema_slow: int = 21, de
 
 
 # --- FETCH HELPER (Momentum endpoint) ---
-import os
 import requests
 
 def fetch_momentum_df(subject: str | None = None, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
@@ -1067,142 +1066,6 @@ def render_dashboard(subject):
 
 
 
-
-    # ⬇️ INSERT THIS LINE RIGHT AFTER THE SCORECARD (here)
-    dynamic_cards.append(constituent_asks_card(subject, top_n=5))
-    dynamic_cards.append(weekly_strategy_card(subject))
-
-
-    # Traits (cached) — newest 5 Positive and 5 Negative
-    traits = fetch_df(TRAITS_URL)
-    pos_list, neg_list = [], []
-    if not traits.empty and "Subject" in traits.columns and "CreatedUTC" in traits.columns:
-        subj_norm = str(subject).strip().casefold()
-        subj_col = traits["Subject"].astype(str).str.strip().str.casefold()
-        tsub = traits[subj_col == subj_norm].copy()
-        if not tsub.empty:
-            raw = tsub["CreatedUTC"].astype(str).str.strip()
-            s = raw.str.replace("T", " ", regex=False).str.replace("Z", "", regex=False)
-            s = s.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)
-            tsub["CreatedUTC_parsed"] = pd.to_datetime(s, errors="coerce")
-            def newest5(df, kind):
-                kk = df[df["TraitType"].astype(str).str.strip().str.casefold().eq(kind.casefold())].copy()
-                kk = kk[kk["CreatedUTC_parsed"].notna()].sort_values("CreatedUTC_parsed", ascending=False).head(5)
-                return kk["TraitDescription"].dropna().astype(str).tolist()
-            pos_list = newest5(tsub, "Positive")
-            neg_list = newest5(tsub, "Negative")
-
-    dynamic_cards.append(
-        html.Div(
-            [
-                html.H2("Behavioral Traits", className="center-text"),
-                html.Div([
-                    html.H3("People like it when I...", style={"color": "green"}),
-                    html.Ul([html.Li(p) for p in pos_list]) if pos_list else html.Div("No recent positive traits."),
-                ], style={"marginBottom": "20px"}),
-                html.Div([
-                    html.H3("People don't like it when I...", style={"color": "crimson"}),
-                    html.Ul([html.Li(n) for n in neg_list]) if neg_list else html.Div("No recent negative traits."),
-                ]),
-            ],
-            className="dashboard-card",
-        )
-    )
-
-    # Bill Sentiment (cached)
-    bills = fetch_df(BILL_SENTIMENT_URL)
-    if bills.empty:
-        dynamic_cards.append(html.Div("No bill sentiment data available.", className="dashboard-card"))
-    else:
-        for col in ["BillName", "AverageSentimentScore", "SentimentLabel"]:
-            if col not in bills.columns:
-                bills[col] = None
-        dynamic_cards.append(
-            html.Div(
-                [
-                    html.H2("Public Sentiment Toward National Bills", className="center-text"),
-                    html.Table(
-                        [
-                            html.Thead([html.Tr([html.Th("Bill"), html.Th("Score"), html.Th("Public Sentiment")])]),
-                            html.Tbody([
-                                html.Tr([
-                                    html.Td(r.get("BillName", "") if isinstance(r, dict) else r["BillName"]),
-                                    html.Td((lambda v: round(v, 2) if pd.notna(v) else "—")(r.get("AverageSentimentScore", None) if isinstance(r, dict) else r["AverageSentimentScore"])),
-                                    html.Td(r.get("SentimentLabel", "") if isinstance(r, dict) else r["SentimentLabel"]),
-                                ]) for _, r in bills.iterrows()
-                            ]),
-                        ],
-                        style={"width": "100%"},
-                    ),
-                ],
-                className="dashboard-card",
-            )
-        )
-
-    # Top Issues (cached)
-    issues = fetch_json(TOP_ISSUES_URL)
-    if issues and all(k in issues for k in ("Liberal", "Conservative", "WeekStartDate")):
-        week = issues["WeekStartDate"]
-        liberal = issues["Liberal"]
-        conservative = issues["Conservative"]
-        dynamic_cards.append(
-            html.Div(
-                [
-                    html.H2(f"Top Issues (Week of {week})", className="center-text"),
-                    html.Div([
-                        html.Div([
-                            html.H3("Conservative Topics", style={'color': 'crimson'}),
-                            html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in conservative]),
-                            html.H3("Liberal Topics", style={'color': 'blue', 'marginTop': '20px'}),
-                            html.Ul([html.Li(f"{t['Rank']}. {t['Topic']}", style={"fontSize": "20px"}) for t in liberal])
-                        ])
-                    ]),
-                ],
-                className="dashboard-card",
-            )
-        )
-
-        # Common Ground (cached)
-    common_df = fetch_df(COMMON_GROUND_URL)
-    if not common_df.empty and "Subject" in common_df.columns:
-        subj_norm = str(subject).strip().casefold()
-        subj_col = common_df["Subject"].astype(str).str.strip().str.casefold()
-        filtered = common_df[subj_col.eq(subj_norm)]
-    else:
-        filtered = pd.DataFrame()
-
-    dynamic_cards.append(
-        html.Div(
-            [
-                html.H2("Common Ground Issues", className="center-text"),
-                (html.Ul([
-                    html.Li([
-                        html.Span(f"{r.get('IssueRank', '')}. "),
-                        html.Span(f"{r.get('Issue', '')}: "),
-                        html.Span(r.get("Explanation", "")),
-                    ], className="common-ground-item")
-                    for _, r in filtered.iterrows()
-                ], className="common-ground-list")
-                 if not filtered.empty else
-                 html.Div("No common ground items for this subject (yet)."))
-            ],
-            className="dashboard-card",
-        )
-    )  
-
-    # Cache the full layout per subject to speed up repeat visits
-    subject_cache_key = f"DASH::{subject}"
-    cached_layout = _cache_get(subject_cache_key)
-    if cached_layout:
-        return cached_layout
-
-    # FINAL: charts + latest comments table appended at the bottom
-    output = dynamic_cards + chart_cards() + [latest_comments_card(subject)]
-    _cache_set(subject_cache_key, output)
-    return output
-
-
-
 # -----------------------------
 # Enable/disable custom date pickers based on mode
 # -----------------------------
@@ -1356,6 +1219,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
 
     # lightweight momentum calc (fallback if your compute_momentum isn't present)
     try:
+        df["Subject"] = str(subject)
         tmp = compute_momentum(df)  # use your existing if available
     except Exception:
         tmp = df.copy()
@@ -1404,20 +1268,6 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
     fig.add_hline(y=0, line_width=1, line_dash="dot")
     return fig
 
-    
-@app.callback(
-    Output("subject-dropdown", "value", allow_duplicate=True),
-    [Input("page-load-once", "n_intervals"),
-     Input("local-default-subject", "data")],
-    prevent_initial_call=True
-)
-def load_from_local(_, local_data):
-    # If we've already set a value (e.g., from DB), don't overwrite.
-    # Dash doesn't give us the current 'value' here cleanly, so we just
-    # return None unless we have a local value and the initial render likely hasn't set one yet.
-    if not local_data or not isinstance(local_data, dict):
-        raise PreventUpdate
-    return local_data.get("default_subject") or dash.no_update
 
 @app.callback(
     Output("local-default-subject", "data"),
@@ -1445,26 +1295,6 @@ def persist_default_subject(value):
         # Fallback: at least keep it locally
         return {"default_subject": value}
 
-@app.callback(
-    Input("page-load-once", "n_intervals"),
-    State("subject-dropdown", "value"),
-    prevent_initial_call=True,
-)
-def load_subject_options(_, current_value):
-    # try canonical list
-    df = fetch_df(SUBJECTS_URL, timeout=8)
-    if df.empty or "Subject" not in df.columns:
-        # fallback to photos if subjects is empty
-        df = fetch_df(PHOTOS_URL, timeout=8)
-        if df.empty or "Subject" not in df.columns:
-            return [], None
-        df = df[["Subject"]].dropna().drop_duplicates()
-
-    subs = sorted(df["Subject"].astype(str).str.strip().unique())
-    options = [{"label": s, "value": s} for s in subs if s]
-    # keep current if it’s still valid; otherwise pick the first
-    value = current_value if current_value in subs else (subs[0] if subs else None)
-    return options, value
 
 @app.callback(
     Output("subject-dropdown", "options"),
@@ -1475,6 +1305,7 @@ def load_subject_options(_, current_value):
     prevent_initial_call=True,
 )
 def load_subject_options(_, saved_value, current_value):
+    print("[page-load] load_subject_options fired")
     try:
         df = fetch_df(SUBJECTS_URL, timeout=8)
         if df.empty or "Subject" not in df.columns:
@@ -1487,31 +1318,27 @@ def load_subject_options(_, saved_value, current_value):
 
         subs = sorted(df["Subject"].astype(str).str.strip().unique())
         options = [{"label": s, "value": s} for s in subs if s]
+
+        # pull the actual value out of the store dict, if present
+        saved_str = None
+        if isinstance(saved_value, dict):
+            saved_str = saved_value.get("default_subject")
+        elif isinstance(saved_value, str):
+            saved_str = saved_value
+
+        # choose the default: current -> saved -> first
         if current_value in subs:
             value = current_value
-        elif saved_value in subs:
-            value = saved_value
+        elif saved_str in subs:
+            value = saved_str
         else:
             value = subs[0] if subs else None
+
         print(f"[subjects] loaded {len(options)} options; default={value}")
         return options, value
     except Exception as e:
         print("[subjects] error:", e)
         return [], None
-
-
-    subs = sorted(df["Subject"].astype(str).str.strip().unique())
-    options = [{"label": s, "value": s} for s in subs if s]
-
-    # pick value: current (if still valid) -> saved from store -> first option
-    if current_value in subs:
-        value = current_value
-    elif saved_value in subs:
-        value = saved_value
-    else:
-        value = subs[0] if subs else None
-
-    return options, value
 
 
 if __name__ == "__main__":
