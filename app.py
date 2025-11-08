@@ -50,8 +50,6 @@ from flask_sql_api import app as flask_app
 app = dash.Dash(__name__, server=flask_app)
 server = flask_app
 
-from flask_cors import CORS  # add near other imports
-
 
 
 # -----------------------------
