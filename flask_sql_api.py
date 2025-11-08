@@ -159,7 +159,7 @@ def subject_bundle():
                     LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
                     WHERE yc.Subject = :subject
                 )
-                SELECT TOP 5 Source, Comment, CreatedUTC, URL
+                SELECT TOP 10 Source, Comment, CreatedUTC, URL
                 FROM C
                 ORDER BY CreatedUTC DESC;
             """), {"subject": subject}).fetchall()
