@@ -642,8 +642,11 @@ def latest_comments_card(subject: str | None):
                 style={
                     "maxHeight": "460px",
                     "overflowY": "auto",
+                    "overflowX": "auto",
                     "border": "1px solid #ddd",
                     "padding": "6px",
+                    "wordWrap": "break-word",
+                    "whiteSpace": "normal",
                 },
             ),
         ],
