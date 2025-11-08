@@ -60,113 +60,136 @@ def parse_date_or_400(value: str, name: str):
 def subject_bundle():
     try:
         subject = request.args.get("subject")
-        start   = request.args.get("start_date")
-        end     = request.args.get("end_date")
+        start = request.args.get("start_date")
+        end = request.args.get("end_date")
         if not subject:
             return jsonify({"error": "subject required"}), 400
 
-        where_dates = ""
         params = {"subject": subject}
+        date_where = ""
         if start and end:
             try:
                 start_d = datetime.strptime(start, "%Y-%m-%d").date()
-                end_d   = datetime.strptime(end,   "%Y-%m-%d").date()
+                end_d = datetime.strptime(end, "%Y-%m-%d").date()
             except Exception:
                 return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
-            where_dates = ""
+            date_where = "WHERE CreatedUTC BETWEEN :start_d AND :end_d"
             params.update({"start_d": start_d, "end_d": end_d})
 
         with ENGINE.begin() as conn:
+            # === Timeseries (daily avg sentiment) ===
             ts_rows = conn.execute(text(f"""
-                SELECT CreatedDate,
-                       CAST(ROUND((ISNULL(AvgSentiment,0)+1.0)*5000.0,0) AS INT) AS NormalizedSentimentScore
-                FROM dbo.SubjectDailySentiment
-                WHERE Subject=:subject {where_dates}
-                ORDER BY CreatedDate
+                SELECT
+                    CAST(SentimentDate AS DATE) AS SentimentDate,
+                    CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
+                FROM (
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where} AND Subject=:subject
+                    UNION ALL
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where} AND Subject=:subject
+                    UNION ALL
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where} AND Subject=:subject
+                ) AS Combined
+                GROUP BY CAST(SentimentDate AS DATE)
+                ORDER BY SentimentDate ASC;
             """), params).fetchall()
 
+            # === Momentum (daily mention count + avg sentiment) ===
             mom_rows = conn.execute(text(f"""
-                SELECT CreatedDate, MentionCount, AvgSentiment
-                FROM dbo.SubjectDailySentiment
-                WHERE Subject=:subject {where_dates}
-                ORDER BY CreatedDate
+                SELECT
+                    CAST(SentimentDate AS DATE) AS ActivityDate,
+                    COUNT(*) AS MentionCount,
+                    AVG(CAST(SentimentScore AS FLOAT)) AS AvgSentiment
+                FROM (
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where} AND Subject=:subject
+                    UNION ALL
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where} AND Subject=:subject
+                    UNION ALL
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where} AND Subject=:subject
+                ) AS Combined
+                GROUP BY CAST(SentimentDate AS DATE)
+                ORDER BY ActivityDate ASC;
             """), params).fetchall()
 
+            # === Weekly Strategy ===
             strat = conn.execute(text("""
                 SELECT TOP (1) StrategySummary, StrategyStatement, Rationale,
                                SupportCount, Confidence, ActionabilityScore,
                                WeekStartUTC, WeekEndUTC
                 FROM dbo.WeeklySubjectStrategy
                 WHERE Subject = :subject
-                ORDER BY WeekEndUTC DESC, Id DESC
+                ORDER BY WeekEndUTC DESC, Id DESC;
             """), {"subject": subject}).fetchone()
 
+            # === Constituent Asks (top 5) ===
             asks = conn.execute(text("""
                 WITH Ranked AS (
-                  SELECT a.Ask, a.SupportCount, a.Confidence, a.WeekStartUTC, a.WeekEndUTC,
-                         ROW_NUMBER() OVER (
-                           PARTITION BY a.Subject
-                           ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
-                         ) rn
-                  FROM dbo.ConstituentAsksLatest7Days a
-                  WHERE a.Subject=:subject
-                    AND a.WeekEndUTC = (SELECT MAX(WeekEndUTC) FROM dbo.ConstituentAsksLatest7Days)
+                    SELECT a.Ask, a.SupportCount, a.Confidence, a.WeekStartUTC, a.WeekEndUTC,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY a.Subject
+                               ORDER BY a.SupportCount DESC, a.Confidence DESC, a.Id DESC
+                           ) rn
+                    FROM dbo.ConstituentAsksLatest7Days a
+                    WHERE a.Subject = :subject
+                      AND a.WeekEndUTC = (SELECT MAX(WeekEndUTC) FROM dbo.ConstituentAsksLatest7Days)
                 )
                 SELECT Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
                 FROM Ranked WHERE rn <= 5
-                ORDER BY rn
+                ORDER BY rn;
             """), {"subject": subject}).fetchall()
 
+            # === Subject Photos ===
             photos = conn.execute(text("""
                 SELECT TOP 3 PhotoURL, OfficeTitle, State, Party, SourceWebsite
                 FROM dbo.ElectedOfficialPhotos
-                WHERE Subject=:subject
-                ORDER BY PhotoURL
+                WHERE Subject = :subject
+                ORDER BY PhotoURL;
             """), {"subject": subject}).fetchall()
 
+            # === Latest Comments (across all sources) ===
             comments = conn.execute(text("""
                 WITH C AS (
-                  SELECT 'Reddit'  AS Source, CAST(Body AS NVARCHAR(MAX))   Comment, CreatedUTC, URL
-                  FROM dbo.RedditCommentsUSSenate WHERE Subject=:subject
-                  UNION ALL
-                  SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
-                  FROM dbo.BlueskyCommentsUSSenate WHERE Subject=:subject
-                  UNION ALL
-                  SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
-                  FROM dbo.YouTubeComments yc
-                  LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
-                  WHERE yc.Subject=:subject
+                    SELECT 'Reddit' AS Source, CAST(Body AS NVARCHAR(MAX)) AS Comment, CreatedUTC, URL
+                    FROM dbo.RedditCommentsUSSenate WHERE Subject = :subject
+                    UNION ALL
+                    SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
+                    FROM dbo.BlueskyCommentsUSSenate WHERE Subject = :subject
+                    UNION ALL
+                    SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
+                    FROM dbo.YouTubeComments yc
+                    LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
+                    WHERE yc.Subject = :subject
                 )
                 SELECT TOP 5 Source, Comment, CreatedUTC, URL
-                FROM C ORDER BY CreatedUTC DESC
+                FROM C
+                ORDER BY CreatedUTC DESC;
             """), {"subject": subject}).fetchall()
 
+        # === Compose the JSON response ===
         out = {
             "timeseries": [
                 {"Date": (r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])),
-                 "Score": int(r[1] if r[1] is not None else 0)}
-                for r in ts_rows
+                 "Score": int(r[1] or 0)} for r in ts_rows
             ],
             "momentum": [
                 {"Date": (r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])),
                  "MentionCount": int(r[1] or 0),
-                 "AvgSentiment": float(r[2] or 0.0)}
-                for r in mom_rows
+                 "AvgSentiment": float(r[2] or 0.0)} for r in mom_rows
             ],
-            "strategy": (dict(strat._mapping) if strat else None),
-            "asks":     [dict(a._mapping) for a in asks],
-            "photos":   [dict(p._mapping) for p in photos],
+            "strategy": dict(strat._mapping) if strat else None,
+            "asks": [dict(a._mapping) for a in asks],
+            "photos": [dict(p._mapping) for p in photos],
             "latest_comments": [
                 {"Source": c[0], "Comment": c[1],
-                 "CreatedUTC": (c[2].isoformat() if c[2] and hasattr(c[2], "isoformat") else str(c[2] or "")),
-                 "URL": c[3]}
-                for c in comments
+                 "CreatedUTC": (c[2].isoformat() if hasattr(c[2], "isoformat") else str(c[2] or "")),
+                 "URL": c[3]} for c in comments
             ],
         }
+
         return jsonify(out)
+
     except Exception as e:
-        # <— we’ll see exactly why in the browser/json
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
 
 
 
@@ -192,31 +215,41 @@ def timeseries():
         start = request.args.get("start_date")
         end = request.args.get("end_date")
 
-        params = {}
         where_parts = []
+        params = {}
 
+        date_where = ""
         if start and end:
             start_d = parse_date_or_400(start, "start_date")
             end_d = parse_date_or_400(end, "end_date")
-            where_parts.append("CreatedDate BETWEEN :start_d AND :end_d")
+            date_where = "WHERE CreatedUTC BETWEEN :start_d AND :end_d"
             params.update({"start_d": start_d, "end_d": end_d})
 
         if subject:
             where_parts.append("Subject = :subject")
             params["subject"] = subject
 
-        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        subject_where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-        sql = f"""
+        query = f"""
             SELECT
-                CreatedDate AS SentimentDate,
+                CAST(SentimentDate AS DATE) AS SentimentDate,
                 Subject,
-                CAST(ROUND((ISNULL(AvgSentiment, 0) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
-            FROM dbo.SubjectDailySentiment
-            {where_sql}
+                CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
+            FROM (
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
+            ) AS Combined
+            {subject_where}
+            GROUP BY CAST(SentimentDate AS DATE), Subject
             ORDER BY SentimentDate ASC, Subject ASC;
         """
-        return jsonify(run_query(sql, params))
+
+        return jsonify(run_query(query, params))
+
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
@@ -367,32 +400,42 @@ def momentum():
         start = request.args.get("start_date")
         end = request.args.get("end_date")
 
-        params = {}
         where_parts = []
+        params = {}
 
+        date_where = ""
         if start and end:
             start_d = parse_date_or_400(start, "start_date")
             end_d = parse_date_or_400(end, "end_date")
-            where_parts.append("CreatedDate BETWEEN :start_d AND :end_d")
+            date_where = "WHERE CreatedUTC BETWEEN :start_d AND :end_d"
             params.update({"start_d": start_d, "end_d": end_d})
 
         if subject:
             where_parts.append("Subject = :subject")
             params["subject"] = subject
 
-        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        subject_where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-        sql = f"""
+        query = f"""
             SELECT
+                CAST(SentimentDate AS DATE) AS ActivityDate,
                 Subject,
-                CreatedDate AS ActivityDate,
-                MentionCount,
-                AvgSentiment
-            FROM dbo.SubjectDailySentiment
-            {where_sql}
+                COUNT(*) AS MentionCount,
+                AVG(CAST(SentimentScore AS FLOAT)) AS AvgSentiment
+            FROM (
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
+            ) AS Combined
+            {subject_where}
+            GROUP BY CAST(SentimentDate AS DATE), Subject
             ORDER BY Subject, ActivityDate;
         """
-        return jsonify(run_query(sql, params))
+
+        return jsonify(run_query(query, params))
+
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
