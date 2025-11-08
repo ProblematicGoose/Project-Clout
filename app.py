@@ -125,9 +125,9 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
         ts_df = fetch_timeseries_df(subject_norm, params.get("start_date"), params.get("end_date"))
         mo_df = fetch_momentum_df(subject_norm, params.get("start_date"), params.get("end_date"))
         ws_df = fetch_df_with_params(WEEKLY_STRATEGY_URL, {"subjects": subject_norm, "latest": "1"}, timeout=timeout)
-        asks_df = fetch_df_with_params(CONSTITUENT_ASKS_URL, {"subjects": subject_norm, "top_n": 5, "latest": "1"}, timeout=timeout)
+        asks_df = fetch_df_with_params(CONSTITUENT_ASKS_URL, {"subjects": subject_norm, "top_n": 10, "latest": "1"}, timeout=timeout)
         photos_df = fetch_df(PHOTOS_URL)
-        comments_df = fetch_df_with_params(LATEST_COMMENTS_URL, {"subject": subject_norm, "limit": 5}, timeout=timeout)
+        comments_df = fetch_df_with_params(LATEST_COMMENTS_URL, {"subject": subject_norm, "limit": 10}, timeout=timeout)
 
         bundle = {
             "timeseries": ([] if ts_df.empty else [
@@ -658,7 +658,7 @@ def constituent_asks_card(subject: str | None, top_n: int = 5):
     """
     if not subject:
         return html.Div(
-            [html.H2("Constituent Asks", className="center-text"),
+            [html.H2("Voice of the People", className="center-text"),
              html.Div("Select a subject to view asks.")],
             className="dashboard-card",
         )
@@ -915,7 +915,7 @@ def render_dashboard(subject):
     dynamic_cards.append(
         html.Div(
             [
-                html.H2("Constituent Asks", className="center-text"),
+                html.H2("Voice of the People", className="center-text"),
                 html.Ul([
                     html.Li(
                         f"{i+1}. {a.get('Ask','')}"
