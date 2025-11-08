@@ -73,7 +73,7 @@ def subject_bundle():
                 end_d   = datetime.strptime(end,   "%Y-%m-%d").date()
             except Exception:
                 return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
-            where_dates = " AND CreatedDate BETWEEN :start_d AND :end_d "
+            where_dates = ""
             params.update({"start_d": start_d, "end_d": end_d})
 
         with ENGINE.begin() as conn:
