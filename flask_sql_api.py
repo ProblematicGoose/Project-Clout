@@ -374,17 +374,25 @@ def mention_counts():
         if start and end:
             start_d = parse_date_or_400(start, "start_date")
             end_d = parse_date_or_400(end, "end_date")
-            where_date = "WHERE CreatedDate BETWEEN :start_d AND :end_d"
+            where_date = "WHERE CreatedUTC BETWEEN :start_d AND :end_d"
             params.update({"start_d": start_d, "end_d": end_d})
 
         sql = f"""
-            SELECT Subject, SUM(MentionCount) AS MentionCount
-            FROM dbo.SubjectDailyActivity
-            {where_date}
+            SELECT Subject, COUNT(*) AS MentionCount
+            FROM (
+                SELECT Subject, CreatedUTC FROM dbo.RedditCommentsUSSenate {where_date}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.BlueskyCommentsUSSenate {where_date}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.YouTubeComments {where_date}
+            ) AS Combined
+            WHERE Subject IS NOT NULL
             GROUP BY Subject
             ORDER BY MentionCount DESC;
         """
+
         return jsonify(run_query(sql, params))
+
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
