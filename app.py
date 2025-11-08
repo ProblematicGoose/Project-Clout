@@ -117,7 +117,7 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
     # 1) Try the real bundle endpoint
     data = fetch_json(url, timeout=timeout)
     if data:
-        _cache_set(cache_key, data)   # ← cache server bundle
+        _cache_set(cache_key, bundle)   # ← cache server bundle
         return data
 
     # 2) Fallback: assemble bundle from existing endpoints
@@ -224,69 +224,134 @@ def start_of_today() -> datetime:
 import numpy as np
 
 def compute_momentum(df: pd.DataFrame, ema_fast: int = 7, ema_slow: int = 21, dead_zone: float = 0.05) -> pd.DataFrame:
+    """
+    Input: df with columns ['Subject', 'ActivityDate', 'MentionCount', 'AvgSentiment'] (daily aggregates).
+    Steps:
+      1) Dead-zone tiny sentiment values to 0 (|x| < dead_zone).
+      2) base_t = log1p(mentions_t) * sentiment_t
+      3) momentum = EMA( base_t, span=ema_fast )
+      4) z-score momentum vs rolling 90d per subject
+      5) accel = EMA_fast - EMA_slow (MACD-style)
+    Output: original columns + ['base','ema_fast','ema_slow','momentum','z_momentum','accel']
+    """
     if df is None or df.empty:
         return pd.DataFrame(columns=[
-            "Subject","ActivityDate","MentionCount","AvgSentiment",
-            "base","ema_fast","ema_slow","momentum","z_momentum","accel"
+            "Subject", "ActivityDate", "MentionCount", "AvgSentiment",
+            "base", "ema_fast", "ema_slow", "momentum", "z_momentum", "accel"
         ])
+
     out = df.copy()
+    # Ensure Subject exists (some endpoints omit it)
+    if "Subject" not in out.columns:
+        out["Subject"] = "(single)"
+    # Ensure types and ordering
     out["ActivityDate"] = pd.to_datetime(out["ActivityDate"], errors="coerce")
-    out = out.dropna(subset=["ActivityDate"]).sort_values(["Subject","ActivityDate"])
-    def _deadzone(x):
-        try: x = float(x)
-        except Exception: return 0.0
+    out = out.dropna(subset=["ActivityDate"])
+    out = out.sort_values(["Subject", "ActivityDate"])
+
+    # Dead-zone tiny sentiment noise
+    def _deadzone(x: float) -> float:
+        try:
+            x = float(x)
+        except Exception:
+            return 0.0
         return 0.0 if (-dead_zone < x < dead_zone) else x
+
     out["AvgSentiment"] = out["AvgSentiment"].map(_deadzone).astype(float)
     out["MentionCount"] = pd.to_numeric(out["MentionCount"], errors="coerce").fillna(0.0)
+
+    # Base = log1p(mentions) * sentiment
     out["base"] = np.log1p(out["MentionCount"]) * out["AvgSentiment"]
+
+    # Per-subject EMA/z-score/accel
     frames = []
-    for _, g in out.groupby("Subject", sort=False):
+    for subject, g in out.groupby("Subject", sort=False):
         g = g.sort_values("ActivityDate")
         g["ema_fast"] = g["base"].ewm(span=ema_fast, adjust=False).mean()
         g["ema_slow"] = g["base"].ewm(span=ema_slow, adjust=False).mean()
         g["momentum"] = g["ema_fast"]
+
         roll = g["momentum"].rolling(90, min_periods=15)
         mu = roll.mean()
         sigma = roll.std(ddof=0).replace(0, np.nan)
         g["z_momentum"] = (g["momentum"] - mu) / sigma
+
         g["accel"] = g["ema_fast"] - g["ema_slow"]
         frames.append(g)
-    return pd.concat(frames, ignore_index=True) if frames else out
 
-# === CHART CALLBACKS ===
-from dash import Input, Output, no_update
-import plotly.graph_objects as go
+    out = pd.concat(frames, ignore_index=True) if frames else out
+    return out
+
+
 
 # --- FETCH HELPER (Momentum endpoint) ---
 import requests
 
-def fetch_momentum_df(subject: str, start_ts, end_ts) -> pd.DataFrame:
-    def _fmt(d):
-        if hasattr(d, "date"): return str(d.date())
-        s = str(d); return s[:10]
-    params = {"subject": subject, "start_date": _fmt(start_ts), "end_date": _fmt(end_ts)}
-    print(f"[momentum]  GET {MOMENTUM_URL} {params}")
-    r = requests.get(MOMENTUM_URL, params=params, timeout=25)
+def fetch_momentum_df(subject: str | None = None, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+    """
+    Calls your Flask endpoint /api/momentum and normalizes the response to:
+      ['Subject', 'ActivityDate', 'MentionCount', 'AvgSentiment']
+    It gracefully handles slight column-name differences.
+    """
+    # Try to use an existing constant if your app defines it; else build from env/default
+    url = None
+    try:
+        url = MOMENTUM_URL  # if your app already defines this
+    except NameError:
+        api_base = os.environ.get("API_BASE", "http://localhost:5050")
+        url = f"{api_base.rstrip('/')}/api/momentum"
+
+    params = {}
+    if start_date: params["start_date"] = start_date
+    if end_date:   params["end_date"]   = end_date
+    # (API supports optional subject filter; if not, we'll filter client-side)
+    if subject:    params["subject"]    = subject
+
+    r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
-    df = pd.DataFrame(r.json())
-    print(f"[momentum]  rows={len(df)}")
+    data = r.json()
+    df = pd.DataFrame(data)
+
     if df.empty:
-        return pd.DataFrame(columns=["Subject","ActivityDate","MentionCount","AvgSentiment"])
+        return pd.DataFrame(columns=["Subject", "ActivityDate", "MentionCount", "AvgSentiment"])
+
+    # Normalize column names
+    # ActivityDate could come as 'ActivityDate', 'Date', or similar
     if "ActivityDate" not in df.columns:
-        for c in ("Date","MomentumDate","CreatedUTC"):
-            if c in df.columns: df = df.rename(columns={c:"ActivityDate"}); break
+        for c in ("Date", "MomentumDate", "CreatedUTC"):
+            if c in df.columns:
+                df = df.rename(columns={c: "ActivityDate"})
+                break
+
+    # Mention count sometimes capitalized differently
     if "MentionCount" not in df.columns:
-        for c in ("Mentions","Count"):
-            if c in df.columns: df = df.rename(columns={c:"MentionCount"}); break
+        for c in ("Mentions", "Count"):
+            if c in df.columns:
+                df = df.rename(columns={c: "MentionCount"})
+                break
+
+    # Average sentiment sometimes 'AvgSentiment' or 'AverageSentiment'
     if "AvgSentiment" not in df.columns:
-        for c in ("AverageSentiment","Avg_Sentiment","SentimentAvg"):
-            if c in df.columns: df = df.rename(columns={c:"AvgSentiment"}); break
-    if "Subject" not in df.columns: df["Subject"] = subject
+        for c in ("AverageSentiment", "Avg_Sentiment", "SentimentAvg"):
+            if c in df.columns:
+                df = df.rename(columns={c: "AvgSentiment"})
+                break
+
+    # Keep only the fields we need; coerce types
+    keep = ["Subject", "ActivityDate", "MentionCount", "AvgSentiment"]
+    for k in keep:
+        if k not in df.columns:
+            df[k] = None
+    df = df[keep].copy()
     df["ActivityDate"] = pd.to_datetime(df["ActivityDate"], errors="coerce")
     df["MentionCount"] = pd.to_numeric(df["MentionCount"], errors="coerce")
-    df["AvgSentiment"]  = pd.to_numeric(df["AvgSentiment"], errors="coerce")
-    return df.dropna(subset=["ActivityDate"])[["Subject","ActivityDate","MentionCount","AvgSentiment"]]
+    df["AvgSentiment"] = pd.to_numeric(df["AvgSentiment"], errors="coerce")
 
+    # If API didn’t filter by subject, do it here
+    if subject:
+        df = df[df["Subject"].astype(str) == str(subject)]
+
+    return df.dropna(subset=["ActivityDate"])
 
 # --- FETCH HELPER (Sentiment Over Time) ---
 def fetch_timeseries_df(subject: str, start_ts, end_ts) -> pd.DataFrame:
@@ -311,29 +376,6 @@ def fetch_timeseries_df(subject: str, start_ts, end_ts) -> pd.DataFrame:
     df["SentimentDate"] = pd.to_datetime(df["SentimentDate"], errors="coerce")
     df["NormalizedSentimentScore"] = pd.to_numeric(df["NormalizedSentimentScore"], errors="coerce")
     return df.dropna(subset=["SentimentDate"])[["SentimentDate","Subject","NormalizedSentimentScore"]]
-
-def fetch_mentions_df(subject: str, start_ts, end_ts) -> pd.DataFrame:
-    def _fmt(d):
-        if hasattr(d, "date"): return str(d.date())
-        s = str(d); return s[:10]
-    params = {"subject": subject, "start_date": _fmt(start_ts), "end_date": _fmt(end_ts)}
-    print(f"[mentions]  GET {MENTION_COUNTS_DAILY_URL} {params}")
-    r = requests.get(MENTION_COUNTS_DAILY_URL, params=params, timeout=25)
-    r.raise_for_status()
-    df = pd.DataFrame(r.json())
-    print(f"[mentions]  rows={len(df)}")
-    if df.empty:
-        return pd.DataFrame(columns=["ActivityDate","Subject","MentionCount"])
-    if "ActivityDate" not in df.columns:
-        for c in ("Date","CreatedUTC"):
-            if c in df.columns: df = df.rename(columns={c:"ActivityDate"}); break
-    if "MentionCount" not in df.columns:
-        for c in ("Mentions","Count"):
-            if c in df.columns: df = df.rename(columns={c:"MentionCount"}); break
-    if "Subject" not in df.columns: df["Subject"] = subject
-    df["ActivityDate"] = pd.to_datetime(df["ActivityDate"], errors="coerce")
-    df["MentionCount"] = pd.to_numeric(df["MentionCount"], errors="coerce")
-    return df.dropna(subset=["ActivityDate"])[["ActivityDate","Subject","MentionCount"]]
 
 
 # --- DATE RANGE HELPER (for momentum controls) ---
@@ -1033,56 +1075,138 @@ def toggle_momentum_custom(mode):
 # --- SENTIMENT OVER TIME CALLBACK ---
 @app.callback(
     Output("sentiment-graph", "figure"),
-    [
-        Input("subject-dropdown", "value"),
-        Input("sentiment-range-mode", "value"),
-        Input("sentiment-custom-range", "start_date"),
-        Input("sentiment-custom-range", "end_date"),
-    ],
-    prevent_initial_call=False,
+    [Input("subject-dropdown", "value"),
+     Input("sentiment-range-mode", "value"),
+     Input("sentiment-custom-range", "start_date"),
+     Input("sentiment-custom-range", "end_date")],
 )
 def update_sentiment_chart(subject, mode, custom_start, custom_end):
-    fig = go.Figure()
-    if not subject:
-        fig.update_layout(template="plotly_white", title="Select a subject to view sentiment over time")
-        return fig
-    start, end = date_range_from_mode(mode, custom_start, custom_end)
-    df = fetch_timeseries_df(subject, start, end)
-    if df.empty:
-        fig.update_layout(template="plotly_white", title="No data for selected range")
-        return fig
-    df = df.sort_values("SentimentDate")
-    fig.add_scatter(x=df["SentimentDate"], y=df["NormalizedSentimentScore"], mode="lines+markers", name=subject)
-    fig.update_layout(template="plotly_white", title="Sentiment Over Time", xaxis_title="Date", yaxis_title="Score")
-    return fig
+    import pandas as pd
+    import plotly.graph_objects as go
 
+    def empty(title):
+        f = go.Figure()
+        f.update_layout(title=title, template="plotly_white")
+        return f
+
+    if not subject:
+        return empty("Select a subject to view sentiment.")
+
+    # date range
+    try:
+        start, end = date_range_from_mode(mode, custom_start, custom_end)
+    except Exception:
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=30)
+
+    # fetch
+    df = fetch_df_with_params(
+        TIMESERIES_URL,
+        {
+            "subject": subject,
+            "start_date": str(pd.to_datetime(start).date()),
+            "end_date": str(pd.to_datetime(end).date()),
+        },
+        timeout=10,
+    )
+    if df.empty:
+        return empty("No time series data in the selected range.")
+
+    # normalize columns
+    date_col = "SentimentDate" if "SentimentDate" in df.columns else ("Date" if "Date" in df.columns else None)
+    y_col = "NormalizedSentimentScore" if "NormalizedSentimentScore" in df.columns else ("Score" if "Score" in df.columns else None)
+    if not date_col or not y_col:
+        return empty("No time series data in the selected range.")
+
+    df["__Date"] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=df["__Date"].astype(str),
+        y=pd.to_numeric(df[y_col], errors="coerce"),
+        mode="lines+markers",
+        name=subject,
+        hovertemplate="Date: %{x}<br>Score: %{y:.0f}<extra></extra>",
+    )
+    fig.update_layout(
+        title="Sentiment Over Time",
+        template="plotly_white",
+        xaxis_title="Date",
+        yaxis_title="Normalized Sentiment (0–10,000)",
+        hovermode="x unified",
+        margin=dict(l=40, r=10, t=40, b=40),
+    )
+    return fig
 
 
 
 
 @app.callback(
     Output("mentions-graph", "figure"),
-    [
-        Input("subject-dropdown", "value"),
-        Input("mentions-range-mode", "value"),
-        Input("mentions-custom-range", "start_date"),
-        Input("mentions-custom-range", "end_date"),
-    ],
-    prevent_initial_call=False,
+    [Input("subject-dropdown", "value"),
+     Input("mentions-range-mode", "value"),
+     Input("mentions-custom-range", "start_date"),
+     Input("mentions-custom-range", "end_date")],
 )
 def update_mentions_chart(subject, mode, custom_start, custom_end):
-    fig = go.Figure()
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    def empty(title):
+        f = go.Figure()
+        f.update_layout(title=title, template="plotly_white")
+        return f
+
     if not subject:
-        fig.update_layout(template="plotly_white", title="Select a subject to view mentions")
-        return fig
-    start, end = date_range_from_mode(mode, custom_start, custom_end)
-    df = fetch_mentions_df(subject, start, end)
+        return empty("Select a subject to view mentions.")
+
+    # date range
+    try:
+        start, end = date_range_from_mode(mode, custom_start, custom_end)
+    except Exception:
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=30)
+
+    # IMPORTANT: push the dates into the API; do NOT post-filter on df["Subject"]
+    df = fetch_df_with_params(
+        MENTION_COUNTS_DAILY_URL,
+        {
+            "subject": subject,
+            "start_date": str(pd.to_datetime(start).date()),
+            "end_date": str(pd.to_datetime(end).date()),
+        },
+        timeout=10,
+    )
     if df.empty:
-        fig.update_layout(template="plotly_white", title="No data for selected range")
-        return fig
-    df = df.sort_values("ActivityDate")
-    fig.add_bar(x=df["ActivityDate"], y=df["MentionCount"], name="Mentions")
-    fig.update_layout(template="plotly_white", title="Mentions by Day", xaxis_title="Date", yaxis_title="Mentions")
+        return empty("No mention data available for the selected range.")
+
+    # find a plausible date column and value column
+    date_col = next((c for c in ["ActivityDate", "MentionDate", "Date", "Day", "CreatedUTC"] if c in df.columns), None)
+    if not date_col:
+        return empty("No date column in mention count data.")
+    y_col = "MentionCount" if "MentionCount" in df.columns else ("Count" if "Count" in df.columns else None)
+    if not y_col:
+        return empty("No mention count column in data.")
+
+    df["__Date"] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    # (The endpoint is already filtered by subject; do not filter by df['Subject'].)
+
+    # If multiple rows per day, aggregate
+    daily = df.groupby("__Date")[y_col].sum().reset_index()
+
+    fig = go.Figure()
+    fig.add_bar(
+        x=daily["__Date"].astype(str),
+        y=pd.to_numeric(daily[y_col], errors="coerce").fillna(0),
+        name="Mentions",
+    )
+    fig.update_layout(
+        title=f"Mentions ({mode}) — Total: {int(daily[y_col].sum()):,}",
+        template="plotly_white",
+        xaxis_title="Date",
+        yaxis_title="Mentions",
+        margin=dict(l=40, r=10, t=40, b=40),
+    )
     return fig
 
 
@@ -1090,36 +1214,76 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
 # --- MOMENTUM CALLBACK (z-scored EMA of log-volume-weighted sentiment) ---
 @app.callback(
     Output("momentum-graph", "figure"),
-    [
-        Input("subject-dropdown", "value"),
-        Input("momentum-range-mode", "value"),
-        Input("momentum-custom-range", "start_date"),
-        Input("momentum-custom-range", "end_date"),
-    ],
-    prevent_initial_call=False,
+    [Input("subject-dropdown", "value"),
+     Input("momentum-range-mode", "value"),
+     Input("momentum-custom-range", "start_date"),
+     Input("momentum-custom-range", "end_date")],
 )
 def update_momentum_chart(subject, mode, custom_start, custom_end):
-    fig = go.Figure()
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    def empty(title):
+        f = go.Figure()
+        f.update_layout(title=title, template="plotly_white")
+        f.add_hline(y=0, line_width=1, line_dash="dot")
+        return f
+
     if not subject:
-        fig.update_layout(template="plotly_white", title="Select a subject to view momentum",
-                          xaxis_title="Date", yaxis_title="Z-Score vs 90d base")
-        fig.add_hline(y=0, line_width=1, line_dash="dot")
-        return fig
-    start, end = date_range_from_mode(mode, custom_start, custom_end)
-    raw = fetch_momentum_df(subject, start, end)
-    if raw.empty:
-        fig.update_layout(template="plotly_white", title="No momentum data for selected range",
-                          xaxis_title="Date", yaxis_title="Z-Score vs 90d base")
-        fig.add_hline(y=0, line_width=1, line_dash="dot")
-        return fig
-    df = compute_momentum(raw).sort_values("ActivityDate")
-    fig.add_bar(x=df["ActivityDate"], y=df["z_momentum"], name=f"{subject} — z-momentum",
-                hovertemplate="Date: %{x|%Y-%m-%d}<br>Z: %{y:.2f}<extra></extra>")
-    fig.add_trace(go.Scatter(x=df["ActivityDate"], y=df["accel"], name="accel (EMA7−EMA21)",
-                             mode="lines", hovertemplate="Acceleration: %{y:.3f}<extra></extra>"))
-    fig.update_layout(template="plotly_white", title="Momentum", xaxis_title="Date",
-                      yaxis_title="Z-Score vs 90d base", legend_orientation="h", legend_y=-0.2,
-                      hovermode="x unified", barmode="overlay", bargap=0.15)
+        return empty("Select a subject to view momentum.")
+
+    # date range
+    try:
+        start, end = date_range_from_mode(mode, custom_start, custom_end)
+    except Exception:
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=30)
+
+    # fetch daily activity for this subject
+    df_raw = fetch_momentum_df(
+        subject=subject,
+        start_date=str(pd.to_datetime(start).date()),
+        end_date=str(pd.to_datetime(end).date()),
+    )
+    if df_raw.empty or not {"ActivityDate", "MentionCount", "AvgSentiment"}.issubset(df_raw.columns):
+        return empty("No momentum data available for the selected range.")
+
+    # compute momentum (assumes compute_momentum exists in your file)
+    df = compute_momentum(df_raw).sort_values("ActivityDate")
+
+    fig = go.Figure()
+    # z-score bars
+    fig.add_bar(
+        name=f"{subject} — z-momentum",
+        x=pd.to_datetime(df["ActivityDate"]).dt.date.astype(str),
+        y=pd.to_numeric(df["z_momentum"], errors="coerce").fillna(0),
+        customdata=pd.DataFrame({
+            "Mentions": pd.to_numeric(df["MentionCount"], errors="coerce").fillna(0),
+            "AvgSent": pd.to_numeric(df["AvgSentiment"], errors="coerce").fillna(0.0),
+        }).to_numpy(),
+        hovertemplate="Date: %{x}<br>Z-Momentum: %{y:.2f}<br>Mentions: %{customdata[0]:.0f}<br>Avg Sentiment: %{customdata[1]:.2f}<extra></extra>",
+    )
+    # accel line
+    if "accel" in df.columns:
+        fig.add_scatter(
+            name=f"{subject} — accel (EMA7−EMA21)",
+            x=pd.to_datetime(df["ActivityDate"]).dt.date.astype(str),
+            y=pd.to_numeric(df["accel"], errors="coerce").fillna(0.0),
+            mode="lines",
+            hovertemplate="Acceleration: %{y:.3f}<extra></extra>",
+        )
+
+    fig.update_layout(
+        title="Momentum (z-scored EMA of log-volume-weighted sentiment)",
+        template="plotly_white",
+        xaxis_title="Date",
+        yaxis_title="Z-Score vs 90-day baseline",
+        hovermode="x unified",
+        legend_orientation="h",
+        legend_y=-0.2,
+        bargap=0.15,
+        margin=dict(l=40, r=10, t=40, b=40),
+    )
     fig.add_hline(y=0, line_width=1, line_dash="dot")
     return fig
 
@@ -1194,8 +1358,6 @@ def load_subject_options(_, saved_value, current_value):
     except Exception as e:
         print("[subjects] error:", e)
         return [], None
-
-
 
 if __name__ == "__main__":
     app.run(debug=False)
