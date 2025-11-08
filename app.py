@@ -12,7 +12,8 @@ from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objects as go
 import os
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
-
+from flask_cors import CORS
+CORS(flask_app, resources={r"/api/*": {"origins": "*"}})
 
 # -----------------------------
 # Config / Endpoints
