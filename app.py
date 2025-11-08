@@ -111,7 +111,7 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
     # Try the bundle route
     data = fetch_json(url, timeout=timeout)  # your existing helper
     if data:
-        _cache_set(cache_key, data, ttl_seconds=120)  # short TTL is fine
+        _cache_set(cache_key, data)  # short TTL is fine
         return data
 
     # ---- Fallback: assemble bundle from existing, working endpoints ----
@@ -140,7 +140,7 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
             "photos": ([] if photos_df.empty else photos_df[photos_df["Subject"].astype(str) == str(subject)].head(3).to_dict(orient="records")),
             "latest_comments": ([] if comments_df.empty else comments_df.to_dict(orient="records")),
         }
-        _cache_set(cache_key, bundle, ttl_seconds=120)
+        _cache_set(cache_key, data)
         return bundle
     except Exception as _:
         return {}
