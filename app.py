@@ -17,7 +17,7 @@ _executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-BASE_URL = "http://127.0.0.1:8050"
+BASE_URL = "https://sentiment-dashboard.ngrok.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
@@ -488,6 +488,9 @@ TIME_MODES = [
 # -----------------------------
 app.layout = html.Div([
     html.H1("Sentiment Dashboard", style={"textAlign": "center", "paddingTop": "20px"}),
+
+    dcc.Interval(id="page-load-once", interval=250, n_intervals=0, max_intervals=1),
+
     # Persist per-browser as a fallback when user is not authenticated
     dcc.Store(id="local-default-subject", storage_type="local"),
 
@@ -812,20 +815,17 @@ def weekly_strategy_card(subject: str | None):
     prevent_initial_call=True,
 )
 def load_subject_options(_, current_value):
-    # Fetch canonical subject list from the API route you already have
+    # fetch canonical list
     df = fetch_df(SUBJECTS_URL, timeout=8)
     if df.empty or "Subject" not in df.columns:
-        # Fallback: use photos if /api/subjects returns nothing
-        photo_df = fetch_df(PHOTOS_URL, timeout=8)
-        if not photo_df.empty and "Subject" in photo_df.columns:
-            df = photo_df[["Subject"]].dropna().drop_duplicates()
-        else:
+        # fallback to photos if necessary
+        df = fetch_df(PHOTOS_URL, timeout=8)
+        if df.empty or "Subject" not in df.columns:
             return [], None
+        df = df[["Subject"]].dropna().drop_duplicates()
 
     subs = sorted(df["Subject"].astype(str).str.strip().unique())
     options = [{"label": s, "value": s} for s in subs if s]
-
-    # keep current if still valid; otherwise choose the first
     value = current_value if current_value in subs else (subs[0] if subs else None)
     return options, value
 
@@ -1596,7 +1596,6 @@ def persist_default_subject(value):
 
 if __name__ == "__main__":
     app.run(debug=False)
-
 
 
 
