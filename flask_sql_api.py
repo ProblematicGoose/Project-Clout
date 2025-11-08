@@ -725,6 +725,41 @@ def subject_bundle():
         # Return the error so we see exactly what's failing
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
+# -----------------------------
+# API: Subjects list for UI dropdown
+# -----------------------------
+@flask_app.route("/api/subjects")
+def subjects():
+    try:
+        with ENGINE.begin() as conn:
+            rows = conn.execute(text("""
+                WITH AllSubjects AS (
+                    SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
+                    FROM dbo.ElectedOfficialPhotos WITH (NOLOCK)
+                    WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
+
+                    UNION
+
+                    SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
+                    FROM dbo.WeeklySubjectStrategy WITH (NOLOCK)
+                    WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
+
+                    UNION
+
+                    SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
+                    FROM dbo.ConstituentAsksLatest7Days WITH (NOLOCK)
+                    WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
+                )
+                SELECT Subject
+                FROM AllSubjects
+                WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
+                ORDER BY Subject;
+            """)).fetchall()
+
+        # jsonify list-of-dicts: [{ "Subject": "Ted Cruz" }, ...]
+        return jsonify([{"Subject": r[0]} for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # -----------------------------
