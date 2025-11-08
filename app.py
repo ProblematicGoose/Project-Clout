@@ -32,6 +32,7 @@ LATEST_COMMENTS_URL = f"{BASE_URL}/api/latest-comments"  # NEW
 CONSTITUENT_ASKS_URL = f"{BASE_URL}/api/constituent-asks"
 WEEKLY_STRATEGY_URL = f"{BASE_URL}/api/weekly-strategy"
 SUBJECT_BUNDLE_URL = f"{BASE_URL}/api/subject-bundle"
+SUBJECTS_URL = f"{BASE_URL}/api/subjects"
 import os
 from sqlalchemy import create_engine, text
 
@@ -93,9 +94,10 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
     if not subject:
         return {}
 
-    params = {"subject": subject}
-    if start_date: params["start_date"] = start_date
-    if end_date:   params["end_date"]   = end_date
+    subject_norm = str(subject).strip()
+    params = {"subject": subject_norm}
+    if start_date: params["start_date"] = str(start_date)
+    if end_date:   params["end_date"]   = str(end_date)
 
     query = urllib.parse.urlencode(params)
     url = f"{SUBJECT_BUNDLE_URL}?{query}"
@@ -103,7 +105,7 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
     # helpful log so you can copy/paste into a browser
     print(f"[bundle] GET {url}")
 
-    cache_key = f"BUNDLE::{subject}::{params.get('start_date','')}::{params.get('end_date','')}"
+    cache_key = f"BUNDLE::{subject_norm}::{params.get('start_date','')}::{params.get('end_date','')}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         return cached
@@ -111,17 +113,17 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
     # Try the bundle route
     data = fetch_json(url, timeout=timeout)  # your existing helper
     if data:
-        _cache_set(cache_key, data)  # short TTL is fine
+        _cache_set(cache_key, data)   # ✅ cache what you received
         return data
 
     # ---- Fallback: assemble bundle from existing, working endpoints ----
     try:
-        ts_df = fetch_timeseries_df(subject, start_date, end_date)
-        mo_df = fetch_momentum_df(subject, start_date, end_date)
-        ws_df = fetch_df_with_params(WEEKLY_STRATEGY_URL, {"subjects": subject, "latest": "1"}, timeout=timeout)
-        asks_df = fetch_df_with_params(CONSTITUENT_ASKS_URL, {"subjects": subject, "top_n": 5, "latest": "1"}, timeout=timeout)
+        ts_df = fetch_timeseries_df(subject_norm, params.get("start_date"), params.get("end_date"))
+        mo_df = fetch_momentum_df(subject_norm, params.get("start_date"), params.get("end_date"))
+        ws_df = fetch_df_with_params(WEEKLY_STRATEGY_URL, {"subjects": subject_norm, "latest": "1"}, timeout=timeout)
+        asks_df = fetch_df_with_params(CONSTITUENT_ASKS_URL, {"subjects": subject_norm, "top_n": 5, "latest": "1"}, timeout=timeout)
         photos_df = fetch_df(PHOTOS_URL)
-        comments_df = fetch_df_with_params(LATEST_COMMENTS_URL, {"subject": subject, "limit": 5}, timeout=timeout)
+        comments_df = fetch_df_with_params(LATEST_COMMENTS_URL, {"subject": subject_norm, "limit": 5}, timeout=timeout)
 
         bundle = {
             "timeseries": ([] if ts_df.empty else [
@@ -131,18 +133,19 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
             ]),
             "momentum": ([] if mo_df.empty else [
                 {"Date": pd.to_datetime(r["ActivityDate"]).date().isoformat(),
-                 "MentionCount": int(r["MentionCount"] or 0),
-                 "AvgSentiment": float(r["AvgSentiment"] or 0.0)}
+                 "MentionCount": int((r["MentionCount"] or 0)),
+                 "AvgSentiment": float((r["AvgSentiment"] or 0.0))}
                 for _, r in mo_df.iterrows()
             ]),
             "strategy": (ws_df.iloc[0].to_dict() if not ws_df.empty else None),
             "asks": ([] if asks_df.empty else asks_df.to_dict(orient="records")),
-            "photos": ([] if photos_df.empty else photos_df[photos_df["Subject"].astype(str) == str(subject)].head(3).to_dict(orient="records")),
+            "photos": ([] if photos_df.empty else photos_df[photos_df["Subject"].astype(str).eq(subject_norm)].head(3).to_dict(orient="records")),
             "latest_comments": ([] if comments_df.empty else comments_df.to_dict(orient="records")),
         }
-        _cache_set(cache_key, data)
+        _cache_set(cache_key, bundle)  # ✅ cache what you built
         return bundle
-    except Exception as _:
+    except Exception as e:
+        print(f"[bundle:fallback] error: {e}")
         return {}
 
 # -----------------------------
@@ -480,13 +483,6 @@ TIME_MODES = [
 ]   
 
 
-# Preload subjects for the subject dropdown
-try:
-    _photos_df = fetch_df(PHOTOS_URL)
-    subjects = sorted(_photos_df["Subject"].dropna().unique()) if "Subject" in _photos_df.columns else []
-except Exception:
-    subjects = []
-
 # -----------------------------
 # Layout (single grid)
 # -----------------------------
@@ -502,8 +498,8 @@ app.layout = html.Div([
     html.Div([
         dcc.Dropdown(
             id="subject-dropdown",
-            options=[{"label": s, "value": s} for s in subjects],
-            value=subjects[0] if subjects else None,
+            options=[],         # start empty; we’ll fill via callback
+            value=None,
             style={"width": "100%"},
             placeholder="Select a subject...",
         )
@@ -807,6 +803,34 @@ def weekly_strategy_card(subject: str | None):
 # -----------------------------
 # Dashboard builder: dynamic cards + fixed chart cards
 # -----------------------------
+
+@app.callback(
+    Output("subject-dropdown", "options"),
+    Output("subject-dropdown", "value"),
+    Input("page-load-once", "n_intervals"),
+    State("subject-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def load_subject_options(_, current_value):
+    # Fetch canonical subject list from the API route you already have
+    df = fetch_df(SUBJECTS_URL, timeout=8)
+    if df.empty or "Subject" not in df.columns:
+        # Fallback: use photos if /api/subjects returns nothing
+        photo_df = fetch_df(PHOTOS_URL, timeout=8)
+        if not photo_df.empty and "Subject" in photo_df.columns:
+            df = photo_df[["Subject"]].dropna().drop_duplicates()
+        else:
+            return [], None
+
+    subs = sorted(df["Subject"].astype(str).str.strip().unique())
+    options = [{"label": s, "value": s} for s in subs if s]
+
+    # keep current if still valid; otherwise choose the first
+    value = current_value if current_value in subs else (subs[0] if subs else None)
+    return options, value
+
+
+
 @app.callback(
     Output("dashboard-grid", "children"),
     Input("subject-dropdown", "value"),
