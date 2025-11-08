@@ -385,43 +385,6 @@ def latest_comments():
     ]
     return jsonify(data)
 
-# -----------------------------
-# API: Subjects list for UI dropdown
-# -----------------------------
-@flask_app.route("/api/subjects")
-def subjects():
-    """
-    Returns a canonical list of subjects for the UI dropdown.
-    Pulls from multiple sources so the list never shows up empty.
-    """
-    try:
-        sql = """
-            WITH AllSubjects AS (
-                SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
-                FROM ElectedOfficialPhotos WITH (NOLOCK)
-                WHERE Subject IS NOT NULL
-
-                UNION
-
-                SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
-                FROM WeeklySubjectStrategy WITH (NOLOCK)
-                WHERE Subject IS NOT NULL
-
-                UNION
-
-                SELECT DISTINCT CAST(Subject AS NVARCHAR(255)) AS Subject
-                FROM ConstituentAsksLatest7Days WITH (NOLOCK)
-                WHERE Subject IS NOT NULL
-            )
-            SELECT Subject
-            FROM AllSubjects
-            WHERE Subject IS NOT NULL AND LTRIM(RTRIM(Subject)) <> ''
-            ORDER BY Subject;
-        """
-        rows = run_query(sql)
-        return jsonify(rows)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # -----------------------------
 # API: Constituent Asks (Top-N per subject)
