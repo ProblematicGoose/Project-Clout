@@ -46,8 +46,14 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL)
 
 
-from flask_sql_api import app as flask_app
-app = dash.Dash(__name__, server=flask_app)
+from flask_sql_api import flask_app  # your shared Flask app
+
+import dash
+app = dash.Dash(
+    __name__,
+    server=flask_app,
+    suppress_callback_exceptions=True,  # ← allow callbacks to target components added later
+)
 server = flask_app
 
 
