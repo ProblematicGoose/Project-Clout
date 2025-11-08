@@ -117,8 +117,8 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
     # 1) Try the real bundle endpoint
     data = fetch_json(url, timeout=timeout)
     if data:
-        _cache_set(cache_key, bundle)   # ← cache server bundle
-        return bundle
+        _cache_set(cache_key, data)   # ← cache server bundle
+        return data
 
     # 2) Fallback: assemble bundle from existing endpoints
     try:
