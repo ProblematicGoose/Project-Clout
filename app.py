@@ -478,15 +478,15 @@ def safe_first(series, default=None):
     
  # Radio options for date ranges used by all charts
 TIME_MODES = [
-    {"label": "Today",      "value": "Today"},
-    {"label": "This Week",  "value": "This Week"},
-    {"label": "This Month", "value": "This Month"},
-    {"label": "This Year",  "value": "This Year"},
+    #{"label": "Today",      "value": "Today"},
+    #{"label": "This Week",  "value": "This Week"},
+    #{"label": "This Month", "value": "This Month"},
+    #{"label": "This Year",  "value": "This Year"},
     {"label": "Custom",     "value": "Custom"},
     # If you want quick-shortcuts too, uncomment any of these:
-    # {"label": "Last 7d",  "value": "7d"},
-    # {"label": "Last 30d", "value": "30d"},
-    # {"label": "Last 90d", "value": "90d"},
+    {"label": "Last 7d",  "value": "7d"},
+    {"label": "Last 30d", "value": "30d"},
+    {"label": "Last 90d", "value": "90d"},
 ]   
 
 
