@@ -528,7 +528,7 @@ def chart_cards():
                 dcc.RadioItems(
                     id="sentiment-range-mode",
                     options=TIME_MODES,
-                    value="This Month",
+                    value="30d",
                     inline=True,
                 ),
                 dcc.DatePickerRange(
@@ -547,7 +547,7 @@ def chart_cards():
                 dcc.RadioItems(
                     id="mentions-range-mode",
                     options=TIME_MODES,
-                    value="This Month",
+                    value="30d",
                     inline=True,
                 ),
                 dcc.DatePickerRange(
@@ -566,7 +566,7 @@ def chart_cards():
                 dcc.RadioItems(
                     id="momentum-range-mode",
                     options=TIME_MODES,
-                    value="This Month",
+                    value="30d",
                     inline=True,
                 ),
                 dcc.DatePickerRange(
@@ -1107,7 +1107,6 @@ def toggle_momentum_custom(mode):
     Input("sentiment-range-mode", "value"),
     Input("sentiment-custom-range", "start_date"),
     Input("sentiment-custom-range", "end_date"),
-    prevent_initial_call=True,
 )
 def update_sentiment_chart(subject, mode, custom_start, custom_end):
     import pandas as pd
@@ -1148,7 +1147,6 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
     Input("mentions-range-mode", "value"),
     Input("mentions-custom-range", "start_date"),
     Input("mentions-custom-range", "end_date"),
-    prevent_initial_call=True,
 )
 def update_mentions_chart(subject, mode, custom_start, custom_end):
     import pandas as pd
@@ -1189,7 +1187,6 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
     Input("momentum-range-mode", "value"),
     Input("momentum-custom-range", "start_date"),
     Input("momentum-custom-range", "end_date"),
-    prevent_initial_call=True,
 )
 def update_momentum_chart(subject, mode, custom_start, custom_end):
     import pandas as pd, numpy as np
