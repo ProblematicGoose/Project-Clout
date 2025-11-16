@@ -10,7 +10,8 @@ import concurrent.futures
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objects as go
 import os
-_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=12)
 
 
 # -----------------------------
@@ -171,11 +172,28 @@ def fetch_df(url: str, timeout: int = 6) -> pd.DataFrame:
                 df = pd.DataFrame(json.load(r))
                 _cache_set(fresh_key, df)
                 return df
-        except Exception:
+        except Exception as e:
+            print(f"[fetch_df] inner error for {url}: {e}")
             stale = _CACHE.get(fresh_key)
             if isinstance(stale, tuple) and isinstance(stale[1], pd.DataFrame):
                 return stale[1]
             return pd.DataFrame()
+
+    future = _executor.submit(_fetch)
+    try:
+        return future.result(timeout=timeout + 2)
+    except FuturesTimeoutError:
+        print(f"[fetch_df] TIMEOUT for {url}")
+        stale = _CACHE.get(fresh_key)
+        if isinstance(stale, tuple) and isinstance(stale[1], pd.DataFrame):
+            return stale[1]
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"[fetch_df] outer error for {url}: {e}")
+        stale = _CACHE.get(fresh_key)
+        if isinstance(stale, tuple) and isinstance(stale[1], pd.DataFrame):
+            return stale[1]
+        return pd.DataFrame()
 
     # submit async
     future = _executor.submit(_fetch)
@@ -195,11 +213,28 @@ def fetch_json(url: str, timeout: int = 6) -> dict:
                 data = json.load(r)
                 _cache_set(fresh_key, data)
                 return data
-        except Exception:
+        except Exception as e:
+            print(f"[fetch_json] inner error for {url}: {e}")
             stale = _CACHE.get(fresh_key)
             if isinstance(stale, tuple) and isinstance(stale[1], dict):
                 return stale[1]
             return {}
+
+    future = _executor.submit(_fetch)
+    try:
+        return future.result(timeout=timeout + 2)
+    except FuturesTimeoutError:
+        print(f"[fetch_json] TIMEOUT for {url}")
+        stale = _CACHE.get(fresh_key)
+        if isinstance(stale, tuple) and isinstance(stale[1], dict):
+            return stale[1]
+        return {}
+    except Exception as e:
+        print(f"[fetch_json] outer error for {url}: {e}")
+        stale = _CACHE.get(fresh_key)
+        if isinstance(stale, tuple) and isinstance(stale[1], dict):
+            return stale[1]
+        return {}
 
     future = _executor.submit(_fetch)
     return future.result(timeout=timeout + 2)
@@ -834,22 +869,11 @@ def render_dashboard(subject):
     bundle = fetch_subject_bundle(subject, str(start), str(end)) or {}
 
     # ---------- 2) Shared datasets in parallel ----------
-    urls = {
-        "scorecard": SCORECARD_URL,
-        "traits":    TRAITS_URL,
-        "bills":     BILL_SENTIMENT_URL,
-        "common":    COMMON_GROUND_URL,
-        "issues":    TOP_ISSUES_URL,
-    }
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-        futures  = {k: ex.submit(fetch_df if k!="issues" else fetch_json, v) for k, v in urls.items()}
-        results  = {k: f.result() for k, f in futures.items()}
-
-    scorecard = results["scorecard"]
-    traits_df = results["traits"]      # SubjectTraitSummary
-    bills_df  = results["bills"]       # NationalBillSentimentMentions (rolled up)
-    common_df = results["common"]      # CommonGroundIssues (latest per subject)
-    issues    = results["issues"] or {}  # WeeklyIdeologyTopics (Top Issues JSON)
+    scorecard = fetch_df(SCORECARD_URL, timeout=8)
+    traits_df = fetch_df(TRAITS_URL, timeout=8)       # SubjectTraitSummary
+    bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=8)  # NationalBillSentimentMentions (rolled up)
+    common_df = fetch_df(COMMON_GROUND_URL, timeout=8)   # CommonGroundIssues (latest per subject)
+    issues    = fetch_json(TOP_ISSUES_URL, timeout=8) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
 
     # ---------- 3) Scorecard tile ----------
     score, office, party, state, photo_url = 5000, "", "", "", None
