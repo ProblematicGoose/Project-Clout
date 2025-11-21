@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request
 import os
 import urllib.parse
 from sqlalchemy import create_engine, text
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 """
 Flask API server for dashboard data.
@@ -11,7 +11,6 @@ Flask API server for dashboard data.
 - Uses CreatedDate (persisted) instead of CAST(CreatedUTC AS DATE)
 - Uses SubjectDailyActivity / SubjectDailySentiment where appropriate for speed
 """
-
 # -----------------------------
 # App + DB
 # -----------------------------
@@ -248,7 +247,20 @@ def timeseries():
             ORDER BY SentimentDate ASC, Subject ASC;
         """
 
-        return jsonify(run_query(query, params))
+        rows = run_query(query, params)
+
+        data = []
+        for r in rows:
+            dt = r["SentimentDate"]
+            if hasattr(dt, "isoformat"):
+                dt = dt.isoformat()
+            data.append({
+                "SentimentDate": dt,
+                "Subject": r["Subject"],
+                "NormalizedSentimentScore": int(r["NormalizedSentimentScore"] or 0),
+            })
+
+        return jsonify(data)
 
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
