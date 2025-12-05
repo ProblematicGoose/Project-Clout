@@ -17,8 +17,7 @@ _executor = concurrent.futures.ThreadPoolExecutor(max_workers=12)
 # -----------------------------
 # Config / Endpoints
 # -----------------------------
-API_BASE_INTERNAL = "http://127.0.0.1:5050"
-BASE_URL = API_BASE_INTERNAL.rstrip("/")
+BASE_URL = "https://sentiment-dashboard.ngrok.app"
 SCORECARD_URL = f"{BASE_URL}/api/scorecard"
 PHOTOS_URL = f"{BASE_URL}/api/subject-photos"
 TIMESERIES_URL = f"{BASE_URL}/api/timeseries"
