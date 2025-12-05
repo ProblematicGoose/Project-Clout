@@ -11,7 +11,7 @@ from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objects as go
 import os
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-_executor = concurrent.futures.ThreadPoolExecutor(max_workers=12)
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
 # -----------------------------
@@ -410,9 +410,9 @@ def fetch_timeseries_df(subject: str, start_ts, end_ts) -> pd.DataFrame:
 
     # Prefer your existing helper; fall back to requests if it's not defined
     try:
-        df = fetch_df_with_params(TIMESERIES_URL, params, timeout=10)  # your app helper
+        df = fetch_df_with_params(TIMESERIES_URL, params, timeout=5)  # your app helper
     except NameError:
-        r = requests.get(TIMESERIES_URL, params=params, timeout=10)
+        r = requests.get(TIMESERIES_URL, params=params, timeout=5)
         r.raise_for_status()
         df = pd.DataFrame(r.json())
 
@@ -866,14 +866,14 @@ def render_dashboard(subject):
     # ---------- 1) One-call subject bundle (last 30 days) ----------
     end = datetime.utcnow().date()
     start = end - timedelta(days=30)
-    bundle = fetch_subject_bundle(subject, str(start), str(end)) or {}
+    bundle = fetch_subject_bundle(subject, str(start), str(end), timeout=4)
 
     # ---------- 2) Shared datasets in parallel ----------
-    scorecard = fetch_df(SCORECARD_URL, timeout=8)
-    traits_df = fetch_df(TRAITS_URL, timeout=8)       # SubjectTraitSummary
-    bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=8)  # NationalBillSentimentMentions (rolled up)
-    common_df = fetch_df(COMMON_GROUND_URL, timeout=8)   # CommonGroundIssues (latest per subject)
-    issues    = fetch_json(TOP_ISSUES_URL, timeout=8) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
+    scorecard = fetch_df(SCORECARD_URL, timeout=4)
+    traits_df = fetch_df(TRAITS_URL, timeout=4)       # SubjectTraitSummary
+    bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=4)  # NationalBillSentimentMentions (rolled up)
+    common_df = fetch_df(COMMON_GROUND_URL, timeout=4)   # CommonGroundIssues (latest per subject)
+    issues    = fetch_json(TOP_ISSUES_URL, timeout=4) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
 
     # ---------- 3) Scorecard tile ----------
     score, office, party, state, photo_url = 5000, "", "", "", None
@@ -1064,25 +1064,58 @@ def render_dashboard(subject):
         )
 
     # ---------- 11) Common Ground Issues (filter to subject) ----------
+    filtered = pd.DataFrame()
+
     if not common_df.empty and "Subject" in common_df.columns:
-        filtered = common_df[common_df["Subject"].astype(str).str.strip().str.casefold()
-                             .eq(str(subject).strip().casefold())]
-    else:
-        filtered = pd.DataFrame()
+        # 1) Filter to the selected subject (case-insensitive, trimmed)
+        filtered = common_df[
+            common_df["Subject"].astype(str).str.strip().str.casefold()
+            == str(subject).strip().casefold()
+        ]
+
+        if not filtered.empty:
+            # 2) Try to identify a "week" column (e.g., WeekStart, WeekOf, WeekEnding, etc.)
+            week_cols = [c for c in filtered.columns if "week" in c.lower()]
+            if week_cols:
+                week_col = week_cols[0]
+                tmp = filtered.copy()
+                tmp[week_col] = pd.to_datetime(tmp[week_col], errors="coerce")
+
+                latest_week = tmp[week_col].max()
+                if pd.notna(latest_week):
+                    filtered = tmp[tmp[week_col] == latest_week]
+
+            # 3) Limit to the latest five issues
+            if "IssueRank" in filtered.columns:
+                filtered = (
+                    filtered.sort_values("IssueRank", ascending=True)
+                            .head(5)
+                )
+            else:
+                filtered = filtered.head(5)
 
     dynamic_cards.append(
         html.Div(
             [
                 html.H2("Common Ground Issues", className="center-text"),
-                (html.Ul([
-                    html.Li([
-                        html.Span(f"{r.get('IssueRank','')}. "),
-                        html.Span(f"{r.get('Issue','')}: "),
-                        html.Span(r.get("Explanation","")),
-                    ], className="common-ground-item")
-                    for _, r in filtered.iterrows()
-                ], className="common-ground-list")
-                 if not filtered.empty else html.Div("No common ground items for this subject (yet)."))
+                (
+                    html.Ul(
+                        [
+                            html.Li(
+                                [
+                                    html.Span(f"{r.get('IssueRank','')}. "),
+                                    html.Span(f"{r.get('Issue','')}: "),
+                                    html.Span(r.get("Explanation","")),
+                                ],
+                                className="common-ground-item",
+                            )
+                            for _, r in filtered.iterrows()
+                        ],
+                        className="common-ground-list",
+                    )
+                    if not filtered.empty
+                    else html.Div("No common ground items for this subject (yet).")
+                ),
             ],
             className="dashboard-card",
         )
@@ -1147,7 +1180,7 @@ def update_sentiment_chart(subject, mode, custom_start, custom_end):
         "subject": subject,
         "start_date": str(pd.to_datetime(start).date()),
         "end_date":   str(pd.to_datetime(end).date()),
-    }, timeout=10)
+    }, timeout=5)
     if df.empty: return empty("Sentiment over time")
 
     date_col = "SentimentDate" if "SentimentDate" in df.columns else ("Date" if "Date" in df.columns else None)
@@ -1188,7 +1221,7 @@ def update_mentions_chart(subject, mode, custom_start, custom_end):
         "subject": subject,
         "start_date": str(pd.to_datetime(start).date()),
         "end_date":   str(pd.to_datetime(end).date()),
-    }, timeout=10)
+    }, timeout=5)
     if df.empty: return empty("Mentions by subject")
 
     date_col = "ActivityDate" if "ActivityDate" in df.columns else ("Date" if "Date" in df.columns else None)
@@ -1228,7 +1261,7 @@ def update_momentum_chart(subject, mode, custom_start, custom_end):
         "subject": subject,
         "start_date": str(pd.to_datetime(start).date()),
         "end_date":   str(pd.to_datetime(end).date()),
-    }, timeout=10)
+    }, timeout=5)
     if df.empty: return empty("Momentum")
 
     # normalize columns
