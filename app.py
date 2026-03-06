@@ -45,6 +45,121 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL)
 
 
+# -----------------------------
+# SQL fallback / augmentation: Truth Social latest comments
+# -----------------------------
+def _get_table_columns(table_name: str, schema: str = "dbo") -> set[str]:
+    """Return a set of column names for a table (best-effort)."""
+    try:
+        q = text("""
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :t
+        """)
+        with engine.begin() as conn:
+            rows = conn.execute(q, {"schema": schema, "t": table_name}).fetchall()
+        return {r[0] for r in rows}
+    except Exception as e:
+        print(f"[_get_table_columns] error for {schema}.{table_name}: {e}")
+        return set()
+
+def fetch_truthsocial_latest_comments_df(subject: str | None = None, limit: int = 10) -> pd.DataFrame:
+    """Fetch latest Truth Social comments from dbo.CombinedTruthSocialComments (best-effort)."""
+    cols = _get_table_columns("CombinedTruthSocialComments", schema="dbo")
+    if not cols:
+        return pd.DataFrame(columns=["Source", "Comment", "CreatedUTC", "URL"])
+
+    def pick(candidates: list[str]) -> str | None:
+        for c in candidates:
+            if c in cols:
+                return c
+        return None
+
+    subject_col = pick(["Subject", "FullName", "Name", "ElectedOfficial"])
+    comment_col = pick(["Comment", "CommentText", "Text", "Body", "Content", "Message"])
+    created_col = pick(["CreatedUTC", "CreatedAtUTC", "CreatedAt", "Timestamp", "Created", "CreatedDateUTC"])
+    url_col     = pick(["URL", "Permalink", "Link", "CommentURL", "PostURL", "PostLink"])
+
+    # If we can't find the minimum fields, bail cleanly
+    if not comment_col or not created_col:
+        return pd.DataFrame(columns=["Source", "Comment", "CreatedUTC", "URL"])
+
+    # Build a safe SELECT with the columns we found
+    where = ""
+    params = {"n": int(limit)}
+    if subject and subject_col:
+        where = f"WHERE {subject_col} = :subject"
+        params["subject"] = str(subject)
+
+    sql = f"""
+        SELECT TOP (:n)
+            'TruthSocial' AS Source,
+            CAST({comment_col} AS NVARCHAR(MAX)) AS Comment,
+            {created_col} AS CreatedUTC
+            {',' if url_col else ''} {url_col + ' AS URL' if url_col else ''}
+        FROM dbo.CombinedTruthSocialComments
+        {where}
+        ORDER BY {created_col} DESC
+    """
+
+    try:
+        with engine.begin() as conn:
+            df = pd.read_sql(text(sql), conn, params=params)
+    except Exception as e:
+        print(f"[fetch_truthsocial_latest_comments_df] error: {e}")
+        return pd.DataFrame(columns=["Source", "Comment", "CreatedUTC", "URL"])
+
+    # Ensure expected columns exist
+    for c in ["Source", "Comment", "CreatedUTC", "URL"]:
+        if c not in df.columns:
+            df[c] = None
+    return df[["Source", "Comment", "CreatedUTC", "URL"]]
+
+def fetch_latest_comments_combined(subject: str | None, limit: int = 10, timeout: int = 4) -> pd.DataFrame:
+    """Combine /api/latest-comments with Truth Social table (CombinedTruthSocialComments)."""
+    params = {"limit": int(limit)}
+    if subject:
+        params["subject"] = subject
+
+    api_df = fetch_df_with_params(LATEST_COMMENTS_URL, params, timeout=timeout)
+    ts_df  = fetch_truthsocial_latest_comments_df(subject=subject, limit=limit)
+
+    # Normalize API columns to match
+    if not api_df.empty:
+        if "Timestamp" in api_df.columns and "CreatedUTC" not in api_df.columns:
+            api_df["CreatedUTC"] = api_df["Timestamp"]
+        if "CreatedUTC" not in api_df.columns and "CreatedAt" in api_df.columns:
+            api_df["CreatedUTC"] = api_df["CreatedAt"]
+        if "Comment" not in api_df.columns:
+            for c in ("Text", "Body", "Content", "Message"):
+                if c in api_df.columns:
+                    api_df["Comment"] = api_df[c]
+                    break
+        if "URL" not in api_df.columns:
+            for c in ("Link", "Permalink", "CommentURL", "PostURL"):
+                if c in api_df.columns:
+                    api_df["URL"] = api_df[c]
+                    break
+        if "Source" not in api_df.columns:
+            api_df["Source"] = "Unknown"
+
+        api_df = api_df.copy()
+        for c in ["Source", "Comment", "CreatedUTC", "URL"]:
+            if c not in api_df.columns:
+                api_df[c] = None
+        api_df = api_df[["Source", "Comment", "CreatedUTC", "URL"]]
+
+    combined = pd.concat([api_df, ts_df], ignore_index=True) if (not api_df.empty or not ts_df.empty) else pd.DataFrame(columns=["Source","Comment","CreatedUTC","URL"])
+
+    # Sort by timestamp desc (best-effort) and trim to limit
+    if not combined.empty:
+        combined["_ts"] = pd.to_datetime(combined["CreatedUTC"], errors="coerce")
+        combined = combined.sort_values("_ts", ascending=False).drop(columns=["_ts"])
+        combined = combined.head(int(limit))
+
+    return combined
+
+
 from flask_sql_api import flask_app  # your shared Flask app
 
 import dash
@@ -128,7 +243,7 @@ def fetch_subject_bundle(subject: str, start_date: str | None = None, end_date: 
         ws_df = fetch_df_with_params(WEEKLY_STRATEGY_URL, {"subjects": subject_norm, "latest": "1"}, timeout=timeout)
         asks_df = fetch_df_with_params(CONSTITUENT_ASKS_URL, {"subjects": subject_norm, "top_n": 5, "latest": "1"}, timeout=timeout)
         photos_df = fetch_df(PHOTOS_URL)
-        comments_df = fetch_df_with_params(LATEST_COMMENTS_URL, {"subject": subject_norm, "limit": 5}, timeout=timeout)
+        comments_df = fetch_latest_comments_combined(subject_norm, limit=5, timeout=timeout)
 
         bundle = {
             "timeseries": ([] if ts_df.empty else [
@@ -617,15 +732,12 @@ def chart_cards():
 
 def latest_comments_card(subject: str | None):
     """
-    Big table at the bottom showing newest 10 total comments across Reddit + Bluesky + YouTube.
+    Big table at the bottom showing newest 10 total comments across Reddit + Bluesky + YouTube + Truth Social.
     This version is non-blocking: on error/timeout, it shows cached or a friendly placeholder.
     """
-    params = {"limit": 10}
-    if subject:
-        params["subject"] = subject
-
+    # Combine your API's latest-comments feed with Truth Social rows from dbo.CombinedTruthSocialComments.
     # Use a shorter timeout just for this hit so it can't stall the whole dashboard render.
-    df = fetch_df_with_params(LATEST_COMMENTS_URL, params, timeout=4)
+    df = fetch_latest_comments_combined(subject, limit=10, timeout=4)
 
     if "Timestamp" not in df.columns and "CreatedUTC" in df.columns:
         df["Timestamp"] = df["CreatedUTC"]
@@ -956,24 +1068,41 @@ def render_dashboard(subject):
     )
 
 
-    # ---------- 7) Latest Comments (bundle) ----------
-    comments = bundle.get("latest_comments") or []
-    rows = [
-        html.Tr([
-            html.Td(c.get("Source", ""), style={"width": "8%", "verticalAlign": "top"}),
-            html.Td(c.get("Comment", ""), style={"verticalAlign": "top", "whiteSpace": "normal"}),
-            html.Td(c.get("CreatedUTC", ""), style={"width": "14%", "verticalAlign": "top"}),
-            html.Td(html.A("link", href=c.get("URL"), target="_blank") if c.get("URL") else "",
-                    style={"width": "8%", "verticalAlign": "top"}),
-        ]) for c in comments
-    ] or [html.Tr([html.Td("No recent comments available.", colSpan=4)])]
+    # ---------- 7) Latest Comments (combined) ----------
+    # Combine /api/latest-comments with Truth Social comments (dbo.CombinedTruthSocialComments)
+    ldf = fetch_latest_comments_combined(subject, limit=10, timeout=4)
+
+    # Ensure columns
+    for col in ["Source", "Comment", "CreatedUTC", "URL"]:
+        if col not in ldf.columns:
+            ldf[col] = None
+
+    rows = []
+    for _, r in ldf.iterrows():
+        src = (r.get("Source") or "")
+        cmt = (r.get("Comment") or "")
+        ts  = (r.get("CreatedUTC") or "")
+        url = (r.get("URL") or "")
+        rows.append(
+            html.Tr([
+                html.Td(src, style={"width": "8%", "verticalAlign": "top"}),
+                html.Td(cmt, style={"verticalAlign": "top", "whiteSpace": "normal"}),
+                html.Td(ts,  style={"width": "14%", "verticalAlign": "top"}),
+                html.Td(html.A("link", href=url, target="_blank") if isinstance(url, str) and url.strip() else "",
+                        style={"width": "8%", "verticalAlign": "top"}),
+            ])
+        )
+
+    if not rows:
+        rows = [html.Tr([html.Td("No recent comments available.", colSpan=4)])]
+
     dynamic_cards.append(
         html.Div(
             [
                 html.H2("Latest Comments", className="center-text"),
                 html.Div(
                     html.Table(
-                        [html.Thead(html.Tr([html.Th("Source"), html.Th("Comment"), html.Th("Timestamp"), html.Th("URL")])),
+                        [html.Thead(html.Tr([html.Th("Source"), html.Th("Comment"), html.Th("Timestamp"), html.Th("URL")])) ,
                          html.Tbody(rows)],
                         style={"width":"100%"}
                     ),
@@ -985,7 +1114,7 @@ def render_dashboard(subject):
         )
     )
 
-    # ---------- 8) Behavioral Traits ----------
+# ---------- 8) Behavioral Traits ----------
     pos_list, neg_list = [], []
     if not traits_df.empty and "Subject" in traits_df.columns:
         subj_norm = str(subject).strip().casefold()

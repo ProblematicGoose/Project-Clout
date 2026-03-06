@@ -79,18 +79,35 @@ def subject_bundle():
             # === Timeseries (daily avg sentiment) ===
             ts_rows = conn.execute(text(f"""
                 SELECT
-                    CAST(SentimentDate AS DATE) AS SentimentDate,
-                    CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
-                FROM (
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where} AND Subject=:subject
-                    UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where} AND Subject=:subject
-                    UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where} AND Subject=:subject
-                ) AS Combined
-                GROUP BY CAST(SentimentDate AS DATE)
-                ORDER BY SentimentDate ASC;
-            """), params).fetchall()
+                CAST(SentimentDate AS DATE) AS SentimentDate,
+                CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
+            FROM (
+                SELECT SentimentScore, CreatedUTC AS SentimentDate
+                FROM dbo.RedditCommentsUSSenate
+                WHERE Subject=:subject
+                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+
+                UNION ALL
+                SELECT SentimentScore, CreatedUTC AS SentimentDate
+                FROM dbo.BlueskyCommentsUSSenate
+                WHERE Subject=:subject
+                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+
+                UNION ALL
+                SELECT SentimentScore, CreatedUTC AS SentimentDate
+                FROM dbo.YouTubeComments
+                WHERE Subject=:subject
+                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+
+                UNION ALL
+                SELECT SentimentScore, CreatedUTC AS SentimentDate
+                FROM dbo.CombinedTruthSocialComments
+                WHERE Subject=:subject
+                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+            ) AS Combined
+            GROUP BY CAST(SentimentDate AS DATE)
+            ORDER BY SentimentDate ASC;
+        """), params).fetchall()
 
             # === Momentum (daily mention count + avg sentiment) ===
             mom_rows = conn.execute(text(f"""
@@ -99,11 +116,28 @@ def subject_bundle():
                     COUNT(*) AS MentionCount,
                     AVG(CAST(SentimentScore AS FLOAT)) AS AvgSentiment
                 FROM (
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where} AND Subject=:subject
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate
+                    FROM dbo.RedditCommentsUSSenate
+                    WHERE Subject=:subject
+                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+
                     UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where} AND Subject=:subject
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate
+                    FROM dbo.BlueskyCommentsUSSenate
+                    WHERE Subject=:subject
+                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+
                     UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where} AND Subject=:subject
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate
+                    FROM dbo.YouTubeComments
+                    WHERE Subject=:subject
+                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+
+                    UNION ALL
+                    SELECT SentimentScore, CreatedUTC AS SentimentDate
+                    FROM dbo.CombinedTruthSocialComments
+                    WHERE Subject=:subject
+                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
                 ) AS Combined
                 GROUP BY CAST(SentimentDate AS DATE)
                 ORDER BY ActivityDate ASC;
@@ -149,14 +183,21 @@ def subject_bundle():
                 WITH C AS (
                     SELECT 'Reddit' AS Source, CAST(Body AS NVARCHAR(MAX)) AS Comment, CreatedUTC, URL
                     FROM dbo.RedditCommentsUSSenate WHERE Subject = :subject
+
                     UNION ALL
                     SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
                     FROM dbo.BlueskyCommentsUSSenate WHERE Subject = :subject
+
                     UNION ALL
                     SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
                     FROM dbo.YouTubeComments yc
                     LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
                     WHERE yc.Subject = :subject
+
+                    UNION ALL
+                    SELECT 'TruthSocial', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, [URL]
+                    FROM dbo.CombinedTruthSocialComments
+                    WHERE Subject = :subject
                 )
                 SELECT TOP 10 Source, Comment, CreatedUTC, URL
                 FROM C
@@ -241,6 +282,8 @@ def timeseries():
                 SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
                 UNION ALL
                 SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.CombinedTruthSocialComments {date_where}
             ) AS Combined
             {subject_where}
             GROUP BY CAST(SentimentDate AS DATE), Subject
@@ -294,9 +337,9 @@ def bill_sentiment():
                 CAST(ROUND(AVG(SentimentScore), 2) AS FLOAT) AS AverageSentimentScore,
                 CASE
                     WHEN AVG(SentimentScore) >= 0.50 THEN 'Very Positive'
-                    WHEN AVG(SentimentScore) >= 0.05 THEN 'Slightly Positive'
+                    WHEN AVG(SentimentScore) >= 0.05 AND AVG(SentimentScore) < 0.50 THEN 'Slightly Positive'
                     WHEN AVG(SentimentScore) > -0.05 AND AVG(SentimentScore) < 0.05 THEN 'Neutral'
-                    WHEN AVG(SentimentScore) <= -0.05 THEN 'Slightly Negative'
+                    WHEN AVG(SentimentScore) <= -0.05 AND AVG(SentimentScore) > -0.50 THEN 'Slightly Negative'
                     WHEN AVG(SentimentScore) <= -0.50 THEN 'Very Negative'
                 END AS SentimentLabel
             FROM NationalBillSentimentMentions
@@ -397,6 +440,8 @@ def mention_counts():
                 SELECT Subject, CreatedUTC FROM dbo.BlueskyCommentsUSSenate {where_date}
                 UNION ALL
                 SELECT Subject, CreatedUTC FROM dbo.YouTubeComments {where_date}
+                UNION ALL
+                SELECT Subject, CreatedUTC FROM dbo.CombinedTruthSocialComments {where_date}
             ) AS Combined
             WHERE Subject IS NOT NULL
             GROUP BY Subject
@@ -448,6 +493,8 @@ def momentum():
                 SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
                 UNION ALL
                 SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.CombinedTruthSocialComments {date_where}
             ) AS Combined
             {subject_where}
             GROUP BY CAST(SentimentDate AS DATE), Subject
@@ -493,6 +540,9 @@ def mention_counts_daily():
             UNION ALL
             SELECT Subject, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments
             WHERE Subject = :subject AND CreatedUTC BETWEEN :start_d AND :end_d
+            UNION ALL
+            SELECT Subject, CreatedUTC AS SentimentDate FROM dbo.CombinedTruthSocialComments
+            WHERE Subject = :subject AND CreatedUTC BETWEEN :start_d AND :end_d
         ) AS Combined
         GROUP BY CAST(SentimentDate AS DATE), Subject
         ORDER BY [Date];
@@ -532,26 +582,36 @@ def latest_comments():
     sql = f"""
         WITH Combined AS (
             SELECT 'Reddit' AS Source,
-                   CAST(Body AS NVARCHAR(MAX)) AS Comment,
-                   CAST(CreatedUTC AS DATETIME) AS CreatedUTC,
-                   CAST(URL AS NVARCHAR(4000)) AS URL,
-                   CAST(Subject AS NVARCHAR(255)) AS Subject
+                CAST(Body AS NVARCHAR(MAX)) AS Comment,
+                CAST(CreatedUTC AS DATETIME) AS CreatedUTC,
+                CAST(URL AS NVARCHAR(4000)) AS URL,
+                CAST(Subject AS NVARCHAR(255)) AS Subject
             FROM dbo.RedditCommentsUSSenate
+
             UNION ALL
             SELECT 'Bluesky',
-                   CAST([Text] AS NVARCHAR(MAX)),
-                   CAST(CreatedUTC AS DATETIME),
-                   CAST(URL AS NVARCHAR(4000)),
-                   CAST(Subject AS NVARCHAR(255))
+                CAST([Text] AS NVARCHAR(MAX)),
+                CAST(CreatedUTC AS DATETIME),
+                CAST(URL AS NVARCHAR(4000)),
+                CAST(Subject AS NVARCHAR(255))
             FROM dbo.BlueskyCommentsUSSenate
+
             UNION ALL
             SELECT 'YouTube',
-                   CAST(yc.[Text] AS NVARCHAR(MAX)),
-                   CAST(yc.CreatedUTC AS DATETIME),
-                   CAST(yv.URL AS NVARCHAR(4000)),
-                   CAST(yc.Subject AS NVARCHAR(255))
+                CAST(yc.[Text] AS NVARCHAR(MAX)),
+                CAST(yc.CreatedUTC AS DATETIME),
+                CAST(yv.URL AS NVARCHAR(4000)),
+                CAST(yc.Subject AS NVARCHAR(255))
             FROM dbo.YouTubeComments yc
             LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
+
+            UNION ALL
+            SELECT 'TruthSocial',
+                CAST([Text] AS NVARCHAR(MAX)),
+                CAST(CreatedUTC AS DATETIME),
+                CAST([URL] AS NVARCHAR(4000)),
+                CAST(Subject AS NVARCHAR(255))
+            FROM dbo.CombinedTruthSocialComments
         )
         SELECT TOP {limit}
             Source, Comment, CreatedUTC, URL, Subject
