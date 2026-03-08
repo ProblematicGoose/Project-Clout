@@ -33,6 +33,7 @@ CONSTITUENT_ASKS_URL = f"{BASE_URL}/api/constituent-asks"
 WEEKLY_STRATEGY_URL = f"{BASE_URL}/api/weekly-strategy"
 SUBJECT_BUNDLE_URL = f"{BASE_URL}/api/subject-bundle"
 SUBJECTS_URL = f"{BASE_URL}/api/subjects"
+ELECTION_OUTLOOK_URL = f"{BASE_URL}/api/election-outlook"
 
 from sqlalchemy import create_engine, text
 
@@ -626,6 +627,131 @@ def safe_first(series, default=None):
     except Exception:
         return default
     
+
+def fetch_election_outlook(subject: str | None, timeout: int = 6) -> dict:
+    if not subject:
+        return {}
+    params = {"subject": str(subject).strip()}
+    query = urllib.parse.urlencode(params)
+    url = f"{ELECTION_OUTLOOK_URL}?{query}"
+    data = fetch_json(url, timeout=timeout)
+    return data if isinstance(data, dict) else {}
+
+
+def party_color(party: str | None) -> str:
+    p = (party or "").strip().lower()
+    if p == "democrat":
+        return "#1f77b4"
+    if p == "republican":
+        return "#d62728"
+    if p == "independent":
+        return "#7f7f7f"
+    return "#6c757d"
+
+
+def probability_color(probability: float | int | None) -> str:
+    try:
+        p = float(probability or 0)
+    except Exception:
+        p = 0.0
+    if p >= 0.40:
+        return "#2ca02c"
+    if p >= 0.15:
+        return "#ff7f0e"
+    return "#d62728"
+
+
+def make_election_gauge(probability: float | int | None, label: str, title: str) -> go.Figure:
+    try:
+        p = max(0.0, min(1.0, float(probability or 0.0)))
+    except Exception:
+        p = 0.0
+    bar_color = probability_color(p)
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=p * 100.0,
+            number={"suffix": "%", "font": {"size": 34}},
+            title={"text": f"{title}<br><span style='font-size:14px;color:#666'>{label}</span>"},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1},
+                "bar": {"color": bar_color},
+                "steps": [
+                    {"range": [0, 15], "color": "#fde2e2"},
+                    {"range": [15, 40], "color": "#fff1db"},
+                    {"range": [40, 100], "color": "#e4f5e8"},
+                ],
+                "threshold": {
+                    "line": {"color": "#333", "width": 4},
+                    "thickness": 0.8,
+                    "value": p * 100.0,
+                },
+            },
+        )
+    )
+    fig.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=70, b=20), height=280)
+    return fig
+
+
+def election_outlook_card(payload: dict | None):
+    payload = payload or {}
+    subject_info = payload.get("Subject") or {}
+    general = payload.get("GeneralElectionOutlook") or {}
+    default_mode = "general"
+    return html.Div(
+        [
+            dcc.Store(id="election-outlook-store", data=payload),
+            html.Div(
+                [
+                    html.H2("Election Outlook", className="center-text", style={"marginBottom": "6px"}),
+                    html.Div(
+                        [
+                            html.Span(payload.get("RaceType") or "", style={"fontWeight": "600"}),
+                            html.Span(" • "),
+                            html.Span(subject_info.get("Party") or ""),
+                            html.Span(" • "),
+                            html.Span(payload.get("LastUpdated") or ""),
+                        ],
+                        style={"textAlign": "center", "color": "#666", "fontSize": "12px", "marginBottom": "10px"},
+                    ),
+                ]
+            ),
+            dcc.RadioItems(
+                id="election-outlook-toggle",
+                options=[
+                    {"label": "Nomination Outlook", "value": "nomination"},
+                    {"label": "General Election Outlook", "value": "general"},
+                ],
+                value=default_mode,
+                inline=True,
+                style={"textAlign": "center", "marginBottom": "10px"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            dcc.Graph(id="election-outlook-gauge", config={"displayModeBar": False}, style={"height": "300px"}),
+                        ],
+                        style={"flex": "0 0 320px"},
+                    ),
+                    html.Div(
+                        [
+                            html.Div(id="election-outlook-primary"),
+                            html.H4("Race Competitors", style={"marginTop": "14px", "marginBottom": "8px"}),
+                            html.Div(id="election-outlook-competitors"),
+                            html.H4("Path to Victory", style={"marginTop": "14px", "marginBottom": "8px"}),
+                            html.Div(id="election-outlook-path", style={"fontSize": "15px", "lineHeight": "1.45"}),
+                        ],
+                        style={"flex": "1", "minWidth": "0"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "18px", "alignItems": "flex-start", "flexWrap": "wrap"},
+            ),
+        ],
+        className="dashboard-card",
+        style={"gridColumn": "1 / -1"},
+    )
+
  # Radio options for date ranges used by all charts
 TIME_MODES = [
     #{"label": "Today",      "value": "Today"},
@@ -986,6 +1112,7 @@ def render_dashboard(subject):
     bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=4)  # NationalBillSentimentMentions (rolled up)
     common_df = fetch_df(COMMON_GROUND_URL, timeout=4)   # CommonGroundIssues (latest per subject)
     issues    = fetch_json(TOP_ISSUES_URL, timeout=4) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
+    election_outlook = fetch_election_outlook(subject, timeout=4)
 
     # ---------- 3) Scorecard tile ----------
     score, office, party, state, photo_url = 5000, "", "", "", None
@@ -1020,6 +1147,10 @@ def render_dashboard(subject):
             className="dashboard-card scorecard-container",
         )
     )
+
+    # ---------- 3b) Election Outlook ----------
+    if election_outlook and not election_outlook.get("error"):
+        dynamic_cards.append(election_outlook_card(election_outlook))
 
     # ---------- 4) Weekly Strategy (bundle) ----------
     strat = bundle.get("strategy") or {}
@@ -1253,6 +1384,110 @@ def render_dashboard(subject):
     # ---------- 12) Return cards + charts ----------
     return dynamic_cards + chart_cards()
 
+
+
+@app.callback(
+    Output("election-outlook-gauge", "figure"),
+    Output("election-outlook-primary", "children"),
+    Output("election-outlook-competitors", "children"),
+    Output("election-outlook-path", "children"),
+    Input("election-outlook-store", "data"),
+    Input("election-outlook-toggle", "value"),
+    prevent_initial_call=True,
+)
+def update_election_outlook_card(payload, mode):
+    payload = payload or {}
+    subject_info = payload.get("Subject") or {}
+    mode = (mode or "general").lower()
+    if mode == "nomination":
+        mode_key = "NominationOutlook"
+        title = "Nomination Outlook"
+        prob = float(((payload.get(mode_key) or {}).get("Probability") or 0.0))
+        label = (payload.get(mode_key) or {}).get("Label") or "Long Shot"
+        competitors = (payload.get(mode_key) or {}).get("Competitors") or []
+    else:
+        mode_key = "GeneralElectionOutlook"
+        title = "General Election Outlook"
+        prob = float(((payload.get(mode_key) or {}).get("Probability") or 0.0))
+        label = (payload.get(mode_key) or {}).get("Label") or "Long Shot"
+        competitors = (payload.get(mode_key) or {}).get("Competitors") or []
+
+    fig = make_election_gauge(prob, label, title)
+
+    def _money(v):
+        try:
+            return f"${float(v):,.0f}"
+        except Exception:
+            return "—"
+
+    primary = html.Div([
+        html.Div(title, style={"fontSize": "14px", "color": "#666"}),
+        html.Div(f"{prob * 100:.1f}%", style={"fontSize": "42px", "fontWeight": "700", "color": probability_color(prob), "lineHeight": "1.0"}),
+        html.Div(label, style={"fontSize": "20px", "fontWeight": "600", "marginBottom": "10px"}),
+        html.Div([
+            html.Span(subject_info.get("Subject") or "", style={"fontWeight": "700", "fontSize": "20px"}),
+            html.Span(f"  •  {(subject_info.get('Party') or '')}", style={"color": party_color(subject_info.get("Party")), "fontWeight": "600"}),
+        ]),
+        html.Div(subject_info.get("OfficeTitle") or "", style={"color": "#666", "fontSize": "14px", "marginTop": "4px"}),
+        html.Div(
+            [
+                html.Span(f"Nomination: {float(subject_info.get('NominationProbability') or 0.0) * 100:.1f}%"),
+                html.Span("  •  "),
+                html.Span(f"General: {float(subject_info.get('WinProbability') or 0.0) * 100:.1f}%"),
+            ],
+            style={"marginTop": "10px", "fontSize": "15px"},
+        ),
+        html.Div(
+            [
+                html.Span(f"Fundraising: {_money(subject_info.get('TTL_DISB'))}"),
+                html.Span("  •  "),
+                html.Span(f"Tier Score: {float(subject_info.get('CandidateTierScore') or 0.0):.2f}"),
+            ],
+            style={"marginTop": "6px", "fontSize": "14px", "color": "#666"},
+        ),
+    ])
+
+    comp_children = []
+    for row in competitors:
+        p = float(row.get("Probability") or 0.0)
+        comp_children.append(
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Span(row.get("Subject") or "", style={"fontWeight": "600"}),
+                            html.Span(
+                                row.get("Party") or "",
+                                style={
+                                    "marginLeft": "8px",
+                                    "padding": "2px 8px",
+                                    "borderRadius": "12px",
+                                    "backgroundColor": party_color(row.get("Party")),
+                                    "color": "white",
+                                    "fontSize": "12px",
+                                    "fontWeight": "600",
+                                },
+                            ),
+                        ],
+                        style={"display": "flex", "alignItems": "center", "gap": "6px", "flexWrap": "wrap"},
+                    ),
+                    html.Div(
+                        [
+                            html.Span(f"{p * 100:.1f}%", style={"fontWeight": "700", "color": probability_color(p)}),
+                            html.Span(f"  •  {row.get('Outlook') or ''}", style={"color": "#666"}),
+                        ],
+                        style={"marginTop": "2px"},
+                    ),
+                ],
+                style={"padding": "8px 0", "borderBottom": "1px solid #eee"},
+            )
+        )
+
+    if not comp_children:
+        comp_children = [html.Div("No competitor data available.")]
+
+    path = payload.get("PathToVictoryInsight") or subject_info.get("PathToVictoryInsight") or "No path-to-victory insight available."
+    return fig, primary, comp_children, path
 
 
 # -----------------------------

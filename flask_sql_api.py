@@ -50,6 +50,159 @@ def parse_date_or_400(value: str, name: str):
     except Exception:
         raise ValueError(f"Invalid {name} format. Use YYYY-MM-DD.")
 
+def classify_outlook(probability):
+    """Map probability (0..1) to a simple dashboard label."""
+    try:
+        p = float(probability or 0)
+    except Exception:
+        p = 0.0
+    if p >= 0.40:
+        return "Front Runner"
+    if p >= 0.15:
+        return "Competitive"
+    return "Long Shot"
+
+
+def _to_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _serialize_election_row(row):
+    nomination_probability = _to_float(row.get("NominationProbability"))
+    win_probability = _to_float(row.get("WinProbability"))
+    ttl_disb = _to_float(row.get("TTL_DISB"))
+    return {
+        "Subject": row.get("Subject"),
+        "Party": row.get("Party"),
+        "State": row.get("State"),
+        "District": row.get("District"),
+        "MidtermRace2026": row.get("MidtermRace2026"),
+        "RaceKey": row.get("RaceKey"),
+        "IsIncumbent": bool(row.get("IsIncumbent", 0)),
+        "MentionCount": int(row.get("MentionCount") or 0),
+        "TTL_DISB": ttl_disb,
+        "NominationProbability": nomination_probability,
+        "WinProbability": win_probability,
+        "NominationOutlook": classify_outlook(nomination_probability),
+        "GeneralElectionOutlook": classify_outlook(win_probability),
+        "PathToVictoryInsight": row.get("PathToVictoryInsight") or "",
+        "CompetitorSummary": row.get("CompetitorSummary") or "",
+        "CandidateTierScore": _to_float(row.get("CandidateTierScore"), None),
+        "LogFundraisingStrength": _to_float(row.get("LogFundraisingStrength"), None),
+        "PhotoURL": row.get("PhotoURL"),
+        "OfficeTitle": row.get("OfficeTitle"),
+        "SourceWebsite": row.get("SourceWebsite"),
+    }
+
+
+def get_election_outlook_payload(subject: str):
+    sql = """
+        WITH target AS (
+            SELECT TOP (1) RaceKey
+            FROM dbo.ElectionRacePredictions
+            WHERE Subject = :subject
+            ORDER BY LastUpdated DESC
+        )
+        SELECT
+            erp.Subject,
+            erp.Party,
+            erp.State,
+            erp.District,
+            erp.MidtermRace2026,
+            erp.RaceKey,
+            erp.IsIncumbent,
+            erp.MentionCount,
+            erp.TTL_DISB,
+            erp.NominationProbability,
+            erp.WinProbability,
+            erp.CandidateTierScore,
+            erp.LogFundraisingStrength,
+            erp.CompetitorSummary,
+            erp.PathToVictoryInsight,
+            erp.LastUpdated,
+            eop.PhotoURL,
+            eop.OfficeTitle,
+            eop.SourceWebsite
+        FROM dbo.ElectionRacePredictions erp
+        INNER JOIN target t
+            ON erp.RaceKey = t.RaceKey
+        LEFT JOIN dbo.ElectedOfficialPhotos eop
+            ON erp.Subject = eop.Subject
+        ORDER BY erp.WinProbability DESC, erp.NominationProbability DESC, erp.Subject ASC;
+    """
+
+    rows = run_query(sql, {"subject": subject})
+    if not rows:
+        return None
+
+    serialized_rows = [_serialize_election_row(r) for r in rows]
+    selected = next((r for r in serialized_rows if (r.get("Subject") or "").lower() == subject.lower()), serialized_rows[0])
+
+    nomination_competitors = [
+        {
+            "Subject": r["Subject"],
+            "Party": r["Party"],
+            "Probability": r["NominationProbability"],
+            "Outlook": r["NominationOutlook"],
+            "PhotoURL": r.get("PhotoURL"),
+        }
+        for r in sorted(
+            [r for r in serialized_rows if r.get("Party") == selected.get("Party")],
+            key=lambda x: (-x["NominationProbability"], x.get("Subject") or "")
+        )
+    ]
+
+    general_competitors = [
+        {
+            "Subject": r["Subject"],
+            "Party": r["Party"],
+            "Probability": r["WinProbability"],
+            "Outlook": r["GeneralElectionOutlook"],
+            "PhotoURL": r.get("PhotoURL"),
+        }
+        for r in sorted(
+            serialized_rows,
+            key=lambda x: (-x["WinProbability"], x.get("Subject") or "")
+        )
+    ]
+
+    selected["NominationCompetitors"] = nomination_competitors
+    selected["GeneralElectionCompetitors"] = general_competitors
+
+    last_updated = None
+    for r in rows:
+        lu = r.get("LastUpdated")
+        if lu is not None:
+            last_updated = lu.isoformat() if hasattr(lu, "isoformat") else str(lu)
+            break
+
+    return {
+        "Subject": selected,
+        "RaceKey": selected.get("RaceKey"),
+        "RaceType": selected.get("MidtermRace2026"),
+        "SelectedParty": selected.get("Party"),
+        "OfficeTitle": selected.get("OfficeTitle"),
+        "GaugeOptions": ["NominationOutlook", "GeneralElectionOutlook"],
+        "NominationOutlook": {
+            "Probability": selected.get("NominationProbability"),
+            "Label": selected.get("NominationOutlook"),
+            "Competitors": nomination_competitors,
+        },
+        "GeneralElectionOutlook": {
+            "Probability": selected.get("WinProbability"),
+            "Label": selected.get("GeneralElectionOutlook"),
+            "Competitors": general_competitors,
+        },
+        "PathToVictoryInsight": selected.get("PathToVictoryInsight") or "",
+        "LastUpdated": last_updated,
+    }
+
+
 # -----------------------------
 # API: Scorecard (stored proc)
 # -----------------------------
@@ -223,6 +376,7 @@ def subject_bundle():
                  "CreatedUTC": (c[2].isoformat() if hasattr(c[2], "isoformat") else str(c[2] or "")),
                  "URL": c[3]} for c in comments
             ],
+            "election_outlook": get_election_outlook_payload(subject),
         }
 
         return jsonify(out)
@@ -232,6 +386,22 @@ def subject_bundle():
 
 
 
+
+
+@flask_app.route("/api/election-outlook")
+def election_outlook():
+    try:
+        subject = request.args.get("subject")
+        if not subject:
+            return jsonify({"error": "subject required"}), 400
+
+        payload = get_election_outlook_payload(subject)
+        if payload is None:
+            return jsonify({"error": "No election outlook found for subject."}), 404
+
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @flask_app.route("/api/scorecard")
