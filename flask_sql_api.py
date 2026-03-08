@@ -3,6 +3,8 @@ import os
 import urllib.parse
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta, date
+from threading import Lock
+from time import time
 
 """
 Flask API server for dashboard data.
@@ -40,6 +42,57 @@ def run_query(sql: str, params=None):
     with ENGINE.begin() as conn:
         rows = conn.execute(text(sql), params or {})
         return [dict(r._mapping) for r in rows]
+
+
+# -----------------------------
+# Lightweight in-memory TTL cache
+# -----------------------------
+_CACHE = {}
+_CACHE_LOCK = Lock()
+_CACHE_MAX = 200
+
+def _cache_get(key):
+    now = time()
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if not entry:
+            return None
+        expires_at, value = entry
+        if expires_at <= now:
+            _CACHE.pop(key, None)
+            return None
+        return value
+
+def _cache_set(key, value, ttl_seconds=300):
+    now = time()
+    with _CACHE_LOCK:
+        if len(_CACHE) >= _CACHE_MAX:
+            # prune expired first, otherwise evict oldest few entries
+            expired = [k for k, (exp, _) in _CACHE.items() if exp <= now]
+            for k in expired:
+                _CACHE.pop(k, None)
+            if len(_CACHE) >= _CACHE_MAX:
+                for k in list(_CACHE.keys())[:20]:
+                    _CACHE.pop(k, None)
+        _CACHE[key] = (now + ttl_seconds, value)
+
+def _normalize_cache_value(value):
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _normalize_cache_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_cache_value(v) for v in value]
+    return value
+
+def run_cached_query(cache_key, sql: str, params=None, ttl_seconds=300):
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    rows = run_query(sql, params)
+    rows = _normalize_cache_value(rows)
+    _cache_set(cache_key, rows, ttl_seconds=ttl_seconds)
+    return rows
 
 # -----------------------------
 # Helpers
@@ -100,6 +153,90 @@ def _serialize_election_row(row):
     }
 
 
+def _get_subject_timeseries(subject: str, start_d=None, end_d=None):
+    params = {"subject": subject}
+    date_filter = ""
+    cache_key = ("subject_timeseries", subject, str(start_d) if start_d else None, str(end_d) if end_d else None)
+    if start_d and end_d:
+        date_filter = " AND SentimentDate BETWEEN :start_d AND :end_d"
+        params.update({"start_d": start_d, "end_d": end_d})
+
+    sql = f"""
+        SELECT
+            CAST(SentimentDate AS DATE) AS SentimentDate,
+            CAST(ROUND(AVG(NormalizedSentimentScore), 0) AS INT) AS NormalizedSentimentScore
+        FROM dbo.SubjectDailySentiment
+        WHERE Subject = :subject {date_filter}
+        GROUP BY CAST(SentimentDate AS DATE)
+        ORDER BY SentimentDate ASC;
+    """
+    return run_cached_query(cache_key, sql, params, ttl_seconds=300)
+
+
+def _get_subject_momentum(subject: str, start_d=None, end_d=None):
+    params = {"subject": subject}
+    date_filter = ""
+    cache_key = ("subject_momentum", subject, str(start_d) if start_d else None, str(end_d) if end_d else None)
+    if start_d and end_d:
+        date_filter = " AND ActivityDate BETWEEN :start_d AND :end_d"
+        params.update({"start_d": start_d, "end_d": end_d})
+
+    sql = f"""
+        SELECT
+            CAST(a.ActivityDate AS DATE) AS ActivityDate,
+            CAST(SUM(a.MentionCount) AS INT) AS MentionCount,
+            CAST(AVG(CAST(ISNULL(s.AvgSentiment, 0.0) AS FLOAT)) AS FLOAT) AS AvgSentiment
+        FROM dbo.SubjectDailyActivity a
+        LEFT JOIN dbo.SubjectDailySentiment s
+            ON a.Subject = s.Subject
+           AND a.ActivityDate = s.SentimentDate
+        WHERE a.Subject = :subject {date_filter}
+        GROUP BY CAST(a.ActivityDate AS DATE)
+        ORDER BY ActivityDate ASC;
+    """
+    return run_cached_query(cache_key, sql, params, ttl_seconds=300)
+
+
+def _get_subject_photos(subject: str):
+    sql = """
+        SELECT TOP 3 PhotoURL, OfficeTitle, State, Party, SourceWebsite
+        FROM dbo.ElectedOfficialPhotos
+        WHERE Subject = :subject
+        ORDER BY PhotoURL;
+    """
+    return run_cached_query(("subject_photos", subject), sql, {"subject": subject}, ttl_seconds=1800)
+
+
+def _get_latest_comments(subject: str, limit=10):
+    # keep this separately cached because it is one of the more expensive queries
+    sql = f"""
+        WITH C AS (
+            SELECT 'Reddit' AS Source, CAST(Body AS NVARCHAR(MAX)) AS Comment, CreatedUTC, URL
+            FROM dbo.RedditCommentsUSSenate WHERE Subject = :subject
+
+            UNION ALL
+            SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
+            FROM dbo.BlueskyCommentsUSSenate WHERE Subject = :subject
+
+            UNION ALL
+            SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
+            FROM dbo.YouTubeComments yc
+            LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
+            WHERE yc.Subject = :subject
+
+            UNION ALL
+            SELECT 'TruthSocial', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, [URL]
+            FROM dbo.CombinedTruthSocialComments
+            WHERE Subject = :subject
+        )
+        SELECT TOP {int(10)} Source, Comment, CreatedUTC, URL
+        FROM C
+        ORDER BY CreatedUTC DESC;
+    """
+    # keep limit fixed inside subject_bundle for consistent caching
+    return run_cached_query(("latest_comments", subject, int(limit)), sql, {"subject": subject}, ttl_seconds=120)
+
+
 def get_election_outlook_payload(subject: str):
     sql = """
         WITH target AS (
@@ -136,7 +273,12 @@ def get_election_outlook_payload(subject: str):
         ORDER BY erp.WinProbability DESC, erp.NominationProbability DESC, erp.Subject ASC;
     """
 
-    rows = run_query(sql, {"subject": subject})
+    cache_key = ("election_outlook", subject.lower())
+    rows = _cache_get(cache_key)
+    if rows is None:
+        rows = run_query(sql, {"subject": subject})
+        rows = _normalize_cache_value(rows)
+        _cache_set(cache_key, rows, ttl_seconds=300)
     if not rows:
         return None
 
@@ -217,97 +359,41 @@ def subject_bundle():
         if not subject:
             return jsonify({"error": "subject required"}), 400
 
-        params = {"subject": subject}
-        date_where = ""
+        start_d = None
+        end_d = None
         if start and end:
             try:
                 start_d = datetime.strptime(start, "%Y-%m-%d").date()
                 end_d = datetime.strptime(end, "%Y-%m-%d").date()
             except Exception:
                 return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
-            date_where = "WHERE CreatedUTC BETWEEN :start_d AND :end_d"
-            params.update({"start_d": start_d, "end_d": end_d})
 
-        with ENGINE.begin() as conn:
-            # === Timeseries (daily avg sentiment) ===
-            ts_rows = conn.execute(text(f"""
-                SELECT
-                CAST(SentimentDate AS DATE) AS SentimentDate,
-                CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
-            FROM (
-                SELECT SentimentScore, CreatedUTC AS SentimentDate
-                FROM dbo.RedditCommentsUSSenate
-                WHERE Subject=:subject
-                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+        bundle_cache_key = ("subject_bundle", subject.lower(), str(start_d) if start_d else None, str(end_d) if end_d else None)
+        cached_bundle = _cache_get(bundle_cache_key)
+        if cached_bundle is not None:
+            return jsonify(cached_bundle)
 
-                UNION ALL
-                SELECT SentimentScore, CreatedUTC AS SentimentDate
-                FROM dbo.BlueskyCommentsUSSenate
-                WHERE Subject=:subject
-                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
+        ts_rows = _get_subject_timeseries(subject, start_d, end_d)
+        mom_rows = _get_subject_momentum(subject, start_d, end_d)
 
-                UNION ALL
-                SELECT SentimentScore, CreatedUTC AS SentimentDate
-                FROM dbo.YouTubeComments
-                WHERE Subject=:subject
-                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
-
-                UNION ALL
-                SELECT SentimentScore, CreatedUTC AS SentimentDate
-                FROM dbo.CombinedTruthSocialComments
-                WHERE Subject=:subject
-                {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
-            ) AS Combined
-            GROUP BY CAST(SentimentDate AS DATE)
-            ORDER BY SentimentDate ASC;
-        """), params).fetchall()
-
-            # === Momentum (daily mention count + avg sentiment) ===
-            mom_rows = conn.execute(text(f"""
-                SELECT
-                    CAST(SentimentDate AS DATE) AS ActivityDate,
-                    COUNT(*) AS MentionCount,
-                    AVG(CAST(SentimentScore AS FLOAT)) AS AvgSentiment
-                FROM (
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate
-                    FROM dbo.RedditCommentsUSSenate
-                    WHERE Subject=:subject
-                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
-
-                    UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate
-                    FROM dbo.BlueskyCommentsUSSenate
-                    WHERE Subject=:subject
-                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
-
-                    UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate
-                    FROM dbo.YouTubeComments
-                    WHERE Subject=:subject
-                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
-
-                    UNION ALL
-                    SELECT SentimentScore, CreatedUTC AS SentimentDate
-                    FROM dbo.CombinedTruthSocialComments
-                    WHERE Subject=:subject
-                    {"AND CreatedUTC BETWEEN :start_d AND :end_d" if start and end else ""}
-                ) AS Combined
-                GROUP BY CAST(SentimentDate AS DATE)
-                ORDER BY ActivityDate ASC;
-            """), params).fetchall()
-
-            # === Weekly Strategy ===
-            strat = conn.execute(text("""
+        strategy_rows = run_cached_query(
+            ("weekly_strategy_latest", subject),
+            """
                 SELECT TOP (1) StrategySummary, StrategyStatement, Rationale,
                                SupportCount, Confidence, ActionabilityScore,
                                WeekStartUTC, WeekEndUTC
                 FROM dbo.WeeklySubjectStrategy
                 WHERE Subject = :subject
                 ORDER BY WeekEndUTC DESC, Id DESC;
-            """), {"subject": subject}).fetchone()
+            """,
+            {"subject": subject},
+            ttl_seconds=300,
+        )
+        strat = strategy_rows[0] if strategy_rows else None
 
-            # === Constituent Asks (top 5) ===
-            asks = conn.execute(text("""
+        asks = run_cached_query(
+            ("constituent_asks_latest", subject),
+            """
                 WITH Ranked AS (
                     SELECT a.Ask, a.SupportCount, a.Confidence, a.WeekStartUTC, a.WeekEndUTC,
                            ROW_NUMBER() OVER (
@@ -321,71 +407,51 @@ def subject_bundle():
                 SELECT Ask, SupportCount, Confidence, WeekStartUTC, WeekEndUTC
                 FROM Ranked WHERE rn <= 5
                 ORDER BY rn;
-            """), {"subject": subject}).fetchall()
+            """,
+            {"subject": subject},
+            ttl_seconds=300,
+        )
 
-            # === Subject Photos ===
-            photos = conn.execute(text("""
-                SELECT TOP 3 PhotoURL, OfficeTitle, State, Party, SourceWebsite
-                FROM dbo.ElectedOfficialPhotos
-                WHERE Subject = :subject
-                ORDER BY PhotoURL;
-            """), {"subject": subject}).fetchall()
+        photos = _get_subject_photos(subject)
+        comments = _get_latest_comments(subject, limit=10)
+        election_outlook = get_election_outlook_payload(subject)
 
-            # === Latest Comments (across all sources) ===
-            comments = conn.execute(text("""
-                WITH C AS (
-                    SELECT 'Reddit' AS Source, CAST(Body AS NVARCHAR(MAX)) AS Comment, CreatedUTC, URL
-                    FROM dbo.RedditCommentsUSSenate WHERE Subject = :subject
-
-                    UNION ALL
-                    SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
-                    FROM dbo.BlueskyCommentsUSSenate WHERE Subject = :subject
-
-                    UNION ALL
-                    SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
-                    FROM dbo.YouTubeComments yc
-                    LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
-                    WHERE yc.Subject = :subject
-
-                    UNION ALL
-                    SELECT 'TruthSocial', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, [URL]
-                    FROM dbo.CombinedTruthSocialComments
-                    WHERE Subject = :subject
-                )
-                SELECT TOP 10 Source, Comment, CreatedUTC, URL
-                FROM C
-                ORDER BY CreatedUTC DESC;
-            """), {"subject": subject}).fetchall()
-
-        # === Compose the JSON response ===
         out = {
             "timeseries": [
-                {"Date": (r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])),
-                 "Score": int(r[1] or 0)} for r in ts_rows
+                {
+                    "Date": (r["SentimentDate"] if isinstance(r.get("SentimentDate"), str) else str(r.get("SentimentDate"))),
+                    "Score": int(r.get("NormalizedSentimentScore") or 0),
+                }
+                for r in ts_rows
             ],
             "momentum": [
-                {"Date": (r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])),
-                 "MentionCount": int(r[1] or 0),
-                 "AvgSentiment": float(r[2] or 0.0)} for r in mom_rows
+                {
+                    "Date": (r["ActivityDate"] if isinstance(r.get("ActivityDate"), str) else str(r.get("ActivityDate"))),
+                    "MentionCount": int(r.get("MentionCount") or 0),
+                    "AvgSentiment": float(r.get("AvgSentiment") or 0.0),
+                }
+                for r in mom_rows
             ],
-            "strategy": dict(strat._mapping) if strat else None,
-            "asks": [dict(a._mapping) for a in asks],
-            "photos": [dict(p._mapping) for p in photos],
+            "strategy": strat,
+            "asks": asks,
+            "photos": photos,
             "latest_comments": [
-                {"Source": c[0], "Comment": c[1],
-                 "CreatedUTC": (c[2].isoformat() if hasattr(c[2], "isoformat") else str(c[2] or "")),
-                 "URL": c[3]} for c in comments
+                {
+                    "Source": c.get("Source"),
+                    "Comment": c.get("Comment"),
+                    "CreatedUTC": c.get("CreatedUTC") if isinstance(c.get("CreatedUTC"), str) else str(c.get("CreatedUTC") or ""),
+                    "URL": c.get("URL"),
+                }
+                for c in comments
             ],
-            "election_outlook": get_election_outlook_payload(subject),
+            "election_outlook": election_outlook,
         }
 
+        _cache_set(bundle_cache_key, out, ttl_seconds=300)
         return jsonify(out)
 
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
-
-
-
 
 
 @flask_app.route("/api/election-outlook")
