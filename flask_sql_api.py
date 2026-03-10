@@ -102,6 +102,13 @@ def safe_run_cached_query(cache_key, sql: str, params=None, ttl_seconds=300, def
         return [] if default is None else default
 
 
+def safe_getter(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return [] if default is None else default
+
+
 def _get_table_columns(table_name: str, schema: str = "dbo"):
     cache_key = ("table_columns", schema, table_name)
     cached = _cache_get(cache_key)
@@ -179,6 +186,33 @@ def _serialize_election_row(row):
     }
 
 
+def _get_subject_timeseries_fallback(subject: str, start_d=None, end_d=None):
+    params = {"subject": subject}
+    date_where = ""
+    if start_d and end_d:
+        date_where = "WHERE CreatedUTC BETWEEN :start_d AND :end_d"
+        params.update({"start_d": start_d, "end_d": end_d})
+
+    sql = f"""
+        SELECT
+            CAST(SentimentDate AS DATE) AS SentimentDate,
+            CAST(ROUND((AVG(SentimentScore) + 1.0) * 5000.0, 0) AS INT) AS NormalizedSentimentScore
+        FROM (
+            SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate {date_where}
+            UNION ALL
+            SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate {date_where}
+            UNION ALL
+            SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments {date_where}
+            UNION ALL
+            SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.CombinedTruthSocialComments {date_where}
+        ) AS Combined
+        WHERE Subject = :subject
+        GROUP BY CAST(SentimentDate AS DATE)
+        ORDER BY SentimentDate ASC;
+    """
+    return safe_run_cached_query(("subject_timeseries_fallback", subject, str(start_d) if start_d else None, str(end_d) if end_d else None), sql, params, ttl_seconds=300, default=[])
+
+
 def _get_subject_timeseries(subject: str, start_d=None, end_d=None):
     params = {"subject": subject}
     date_filter = ""
@@ -196,7 +230,10 @@ def _get_subject_timeseries(subject: str, start_d=None, end_d=None):
         GROUP BY CAST(SentimentDate AS DATE)
         ORDER BY SentimentDate ASC;
     """
-    return run_cached_query(cache_key, sql, params, ttl_seconds=300)
+    try:
+        return run_cached_query(cache_key, sql, params, ttl_seconds=300)
+    except Exception:
+        return _get_subject_timeseries_fallback(subject, start_d, end_d)
 
 
 def _get_subject_momentum(subject: str, start_d=None, end_d=None):
@@ -436,8 +473,8 @@ def subject_bundle():
         if cached_bundle is not None:
             return jsonify(cached_bundle)
 
-        ts_rows = _get_subject_timeseries(subject, start_d, end_d)
-        mom_rows = _get_subject_momentum(subject, start_d, end_d)
+        ts_rows = safe_getter(lambda: _get_subject_timeseries(subject, start_d, end_d), default=[])
+        mom_rows = safe_getter(lambda: _get_subject_momentum(subject, start_d, end_d), default=[])
 
         strategy_rows = safe_run_cached_query(
             ("weekly_strategy_latest", subject),

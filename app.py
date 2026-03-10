@@ -161,7 +161,7 @@ def fetch_latest_comments_combined(subject: str | None, limit: int = 10, timeout
     return combined
 
 
-from flask_sql_api import flask_app  # shared Flask app
+from flask_sql_api import flask_app  # your shared Flask app
 
 import dash
 app = dash.Dash(
@@ -743,8 +743,14 @@ def election_outlook_card(payload: dict | None):
                                 html.Div(
                                     [
                                         html.Div(id="election-outlook-primary"),
-                                        html.H4("Race Competitors", style={"marginTop": "14px", "marginBottom": "8px"}),
-                                        html.Div(id="election-outlook-competitors"),
+                                        html.Details(
+                                            [
+                                                html.Summary("Race Competitors", style={"cursor": "pointer", "fontWeight": "600", "marginTop": "14px", "marginBottom": "8px"}),
+                                                html.Div(id="election-outlook-competitors"),
+                                            ],
+                                            open=False,
+                                            style={"marginTop": "8px"},
+                                        ),
                                         html.H4("Path to Victory", style={"marginTop": "14px", "marginBottom": "8px"}),
                                         html.Div(id="election-outlook-path", style={"fontSize": "15px", "lineHeight": "1.45"}),
                                     ],
@@ -758,8 +764,9 @@ def election_outlook_card(payload: dict | None):
                 type="default",
             ),
         ],
+        id="election-outlook-card",
         className="dashboard-card",
-        style={"gridColumn": "1 / -1"},
+        style={"gridColumn": "1 / -1", "display": "none"},
     )
 
  # Radio options for date ranges used by all charts
@@ -1209,13 +1216,11 @@ def render_dashboard(subject):
     )
 
 
-    # ---------- 7) Latest Comments ----------
-    latest_comments = bundle.get("latest_comments") or []
-    if latest_comments:
-        ldf = pd.DataFrame(latest_comments)
-    else:
-        ldf = fetch_latest_comments_combined(subject, limit=10, timeout=4)
+    # ---------- 7) Latest Comments (combined) ----------
+    # Combine /api/latest-comments with Truth Social comments (dbo.CombinedTruthSocialComments)
+    ldf = fetch_latest_comments_combined(subject, limit=10, timeout=4)
 
+    # Ensure columns
     for col in ["Source", "Comment", "CreatedUTC", "URL"]:
         if col not in ldf.columns:
             ldf[col] = None
@@ -1419,17 +1424,20 @@ def load_election_outlook_store(subject):
     Output("election-outlook-primary", "children"),
     Output("election-outlook-competitors", "children"),
     Output("election-outlook-path", "children"),
+    Output("election-outlook-card", "style"),
     Input("election-outlook-store", "data"),
     Input("election-outlook-toggle", "value"),
 )
 def update_election_outlook_card(payload, mode):
     payload = payload or {}
-    if not payload or payload.get("error"):
-        fig = make_election_gauge(0.0, "Loading...", "Election Outlook")
-        primary = html.Div("Loading election outlook...", style={"color": "#666"})
-        competitors = [html.Div("Loading competitors...", style={"color": "#666"})]
-        path = "Loading path-to-victory insight..."
-        return fig, primary, competitors, path
+    hidden_style = {"gridColumn": "1 / -1", "display": "none"}
+    shown_style = {"gridColumn": "1 / -1", "display": "block"}
+    if not payload or payload.get("error") or not payload.get("RaceKey"):
+        fig = make_election_gauge(0.0, "Unavailable", "Election Outlook")
+        primary = html.Div()
+        competitors = []
+        path = ""
+        return fig, primary, competitors, path, hidden_style
 
     subject_info = payload.get("Subject") or {}
     mode = (mode or "general").lower()
@@ -1521,7 +1529,7 @@ def update_election_outlook_card(payload, mode):
         comp_children = [html.Div("No competitor data available.")]
 
     path = payload.get("PathToVictoryInsight") or subject_info.get("PathToVictoryInsight") or "No path-to-victory insight available."
-    return fig, primary, comp_children, path
+    return fig, primary, comp_children, path, shown_style
 
 
 # -----------------------------
