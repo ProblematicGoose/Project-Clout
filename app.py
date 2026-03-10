@@ -673,7 +673,7 @@ def make_election_gauge(probability: float | int | None, label: str, title: str)
         go.Indicator(
             mode="gauge+number",
             value=p * 100.0,
-            domain={"x": [0.00, 0.84], "y": [0.0, 1.0]},  # centers the gauge
+            domain={"x": [0.00, 0.74], "y": [0.0, 1.0]},  # centers the gauge
             number={"suffix": "%", "font": {"size": 34}},
             title={
                 "text": f"{title}<br><span style='font-size:14px;color:#666'>{label}</span>"
