@@ -161,7 +161,7 @@ def fetch_latest_comments_combined(subject: str | None, limit: int = 10, timeout
     return combined
 
 
-from flask_sql_api_fixed_subject_bundle import flask_app  # shared Flask app
+from flask_sql_api import flask_app  # shared Flask app
 
 import dash
 app = dash.Dash(
