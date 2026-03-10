@@ -204,9 +204,9 @@ def _cache_get(key: str):
 
 def _cache_set(key: str, value: object):
     _CACHE[key] = (time.time(), value)
-    # Limit cache to 20 entries max
-    if len(_CACHE) > 20:
-        oldest = sorted(_CACHE.items(), key=lambda kv: kv[1][0])[:5]
+    # Limit cache to 100 entries max
+    if len(_CACHE) > 100:
+        oldest = sorted(_CACHE.items(), key=lambda kv: kv[1][0])[:10]
         for k, _ in oldest:
             _CACHE.pop(k, None)
 
@@ -693,59 +693,69 @@ def make_election_gauge(probability: float | int | None, label: str, title: str)
     return fig
 
 
+
 def election_outlook_card(payload: dict | None):
     payload = payload or {}
     subject_info = payload.get("Subject") or {}
-    general = payload.get("GeneralElectionOutlook") or {}
     default_mode = "general"
     return html.Div(
         [
-            dcc.Store(id="election-outlook-store", data=payload),
-            html.Div(
-                [
-                    html.H2("Election Outlook", className="center-text", style={"marginBottom": "6px"}),
-                    html.Div(
-                        [
-                            html.Span(payload.get("RaceType") or "", style={"fontWeight": "600"}),
-                            html.Span(" • "),
-                            html.Span(subject_info.get("Party") or ""),
-                            html.Span(" • "),
-                            html.Span(payload.get("LastUpdated") or ""),
-                        ],
-                        style={"textAlign": "center", "color": "#666", "fontSize": "12px", "marginBottom": "10px"},
-                    ),
-                ]
-            ),
-            dcc.RadioItems(
-                id="election-outlook-toggle",
-                options=[
-                    {"label": "Nomination Outlook", "value": "nomination"},
-                    {"label": "General Election Outlook", "value": "general"},
-                ],
-                value=default_mode,
-                inline=True,
-                style={"textAlign": "center", "marginBottom": "10px"},
-            ),
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            dcc.Graph(id="election-outlook-gauge", config={"displayModeBar": False}, style={"height": "300px"}),
-                        ],
-                        style={"flex": "0 0 320px"},
-                    ),
-                    html.Div(
-                        [
-                            html.Div(id="election-outlook-primary"),
-                            html.H4("Race Competitors", style={"marginTop": "14px", "marginBottom": "8px"}),
-                            html.Div(id="election-outlook-competitors"),
-                            html.H4("Path to Victory", style={"marginTop": "14px", "marginBottom": "8px"}),
-                            html.Div(id="election-outlook-path", style={"fontSize": "15px", "lineHeight": "1.45"}),
-                        ],
-                        style={"flex": "1", "minWidth": "0"},
-                    ),
-                ],
-                style={"display": "flex", "gap": "18px", "alignItems": "flex-start", "flexWrap": "wrap"},
+            dcc.Loading(
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                html.H2("Election Outlook", className="center-text", style={"marginBottom": "6px"}),
+                                html.Div(
+                                    [
+                                        html.Span(payload.get("RaceType") or "", style={"fontWeight": "600"}),
+                                        html.Span(" • "),
+                                        html.Span(subject_info.get("Party") or ""),
+                                        html.Span(" • "),
+                                        html.Span(payload.get("LastUpdated") or ""),
+                                    ],
+                                    style={"textAlign": "center", "color": "#666", "fontSize": "12px", "marginBottom": "10px"},
+                                ),
+                            ]
+                        ),
+                        dcc.RadioItems(
+                            id="election-outlook-toggle",
+                            options=[
+                                {"label": "Nomination Outlook", "value": "nomination"},
+                                {"label": "General Election Outlook", "value": "general"},
+                            ],
+                            value=default_mode,
+                            inline=True,
+                            style={"textAlign": "center", "marginBottom": "10px"},
+                        ),
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        dcc.Graph(
+                                            id="election-outlook-gauge",
+                                            config={"displayModeBar": False},
+                                            style={"height": "300px"},
+                                        ),
+                                    ],
+                                    style={"flex": "0 0 320px"},
+                                ),
+                                html.Div(
+                                    [
+                                        html.Div(id="election-outlook-primary"),
+                                        html.H4("Race Competitors", style={"marginTop": "14px", "marginBottom": "8px"}),
+                                        html.Div(id="election-outlook-competitors"),
+                                        html.H4("Path to Victory", style={"marginTop": "14px", "marginBottom": "8px"}),
+                                        html.Div(id="election-outlook-path", style={"fontSize": "15px", "lineHeight": "1.45"}),
+                                    ],
+                                    style={"flex": "1", "minWidth": "0"},
+                                ),
+                            ],
+                            style={"display": "flex", "gap": "18px", "alignItems": "flex-start", "flexWrap": "wrap"},
+                        ),
+                    ]
+                ),
+                type="default",
             ),
         ],
         className="dashboard-card",
@@ -773,6 +783,8 @@ app.layout = html.Div([
     html.H1("Sentiment Dashboard", style={"textAlign": "center", "paddingTop": "20px"}),
     # Persist per-browser as a fallback when user is not authenticated
     dcc.Store(id="local-default-subject", storage_type="local"),
+    # Lazy-loaded election payload
+    dcc.Store(id="election-outlook-store", data={}),
 
     # One-time page-load trigger
     dcc.Interval(id="page-load-once", max_intervals=1, interval=250),
@@ -1112,7 +1124,6 @@ def render_dashboard(subject):
     bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=4)  # NationalBillSentimentMentions (rolled up)
     common_df = fetch_df(COMMON_GROUND_URL, timeout=4)   # CommonGroundIssues (latest per subject)
     issues    = fetch_json(TOP_ISSUES_URL, timeout=4) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
-    election_outlook = fetch_election_outlook(subject, timeout=4)
 
     # ---------- 3) Scorecard tile ----------
     score, office, party, state, photo_url = 5000, "", "", "", None
@@ -1148,9 +1159,8 @@ def render_dashboard(subject):
         )
     )
 
-    # ---------- 3b) Election Outlook ----------
-    if election_outlook and not election_outlook.get("error"):
-        dynamic_cards.append(election_outlook_card(election_outlook))
+    # ---------- 3b) Election Outlook (lazy-loaded shell) ----------
+    dynamic_cards.append(election_outlook_card(None))
 
     # ---------- 4) Weekly Strategy (bundle) ----------
     strat = bundle.get("strategy") or {}
@@ -1386,6 +1396,22 @@ def render_dashboard(subject):
 
 
 
+
+@app.callback(
+    Output("election-outlook-store", "data"),
+    Input("subject-dropdown", "value"),
+)
+def load_election_outlook_store(subject):
+    if not subject:
+        return {}
+    try:
+        payload = fetch_election_outlook(subject, timeout=4)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as e:
+        print(f"[election_outlook] load error for {subject}: {e}")
+        return {}
+
+
 @app.callback(
     Output("election-outlook-gauge", "figure"),
     Output("election-outlook-primary", "children"),
@@ -1393,10 +1419,16 @@ def render_dashboard(subject):
     Output("election-outlook-path", "children"),
     Input("election-outlook-store", "data"),
     Input("election-outlook-toggle", "value"),
-    prevent_initial_call=True,
 )
 def update_election_outlook_card(payload, mode):
     payload = payload or {}
+    if not payload or payload.get("error"):
+        fig = make_election_gauge(0.0, "Loading...", "Election Outlook")
+        primary = html.Div("Loading election outlook...", style={"color": "#666"})
+        competitors = [html.Div("Loading competitors...", style={"color": "#666"})]
+        path = "Loading path-to-victory insight..."
+        return fig, primary, competitors, path
+
     subject_info = payload.get("Subject") or {}
     mode = (mode or "general").lower()
     if mode == "nomination":
