@@ -666,13 +666,18 @@ def make_election_gauge(probability: float | int | None, label: str, title: str)
         p = max(0.0, min(1.0, float(probability or 0.0)))
     except Exception:
         p = 0.0
+
     bar_color = probability_color(p)
+
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
             value=p * 100.0,
+            domain={"x": [0.08, 0.92], "y": [0.0, 1.0]},  # centers the gauge
             number={"suffix": "%", "font": {"size": 34}},
-            title={"text": f"{title}<br><span style='font-size:14px;color:#666'>{label}</span>"},
+            title={
+                "text": f"{title}<br><span style='font-size:14px;color:#666'>{label}</span>"
+            },
             gauge={
                 "axis": {"range": [0, 100], "tickwidth": 1},
                 "bar": {"color": bar_color},
@@ -689,7 +694,12 @@ def make_election_gauge(probability: float | int | None, label: str, title: str)
             },
         )
     )
-    fig.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=70, b=20), height=280)
+
+    fig.update_layout(
+        template="plotly_white",
+        margin=dict(l=35, r=35, t=70, b=20),
+        height=280,
+    )
     return fig
 
 
