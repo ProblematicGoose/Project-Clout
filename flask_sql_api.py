@@ -414,7 +414,6 @@ def subject_bundle():
 
         photos = _get_subject_photos(subject)
         comments = _get_latest_comments(subject, limit=10)
-        election_outlook = get_election_outlook_payload(subject)
 
         out = {
             "timeseries": [
@@ -444,7 +443,6 @@ def subject_bundle():
                 }
                 for c in comments
             ],
-            "election_outlook": election_outlook,
         }
 
         _cache_set(bundle_cache_key, out, ttl_seconds=300)
