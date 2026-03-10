@@ -745,10 +745,15 @@ def election_outlook_card(payload: dict | None):
                                         dcc.Graph(
                                             id="election-outlook-gauge",
                                             config={"displayModeBar": False},
-                                            style={"height": "300px"},
+                                            style={"height": "300px", "width": "100%"},
                                         ),
                                     ],
-                                    style={"flex": "0 0 320px"},
+                                    style={
+                                        "flex": "0 0 320px",
+                                        "display": "flex",
+                                        "justifyContent": "center",
+                                        "alignItems": "center",
+                                    },
                                 ),
                                 html.Div(
                                     [
