@@ -161,7 +161,7 @@ def fetch_latest_comments_combined(subject: str | None, limit: int = 10, timeout
     return combined
 
 
-from flask_sql_api import flask_app  # your shared Flask app
+from flask_sql_api_fixed_subject_bundle import flask_app  # shared Flask app
 
 import dash
 app = dash.Dash(
@@ -1209,11 +1209,13 @@ def render_dashboard(subject):
     )
 
 
-    # ---------- 7) Latest Comments (combined) ----------
-    # Combine /api/latest-comments with Truth Social comments (dbo.CombinedTruthSocialComments)
-    ldf = fetch_latest_comments_combined(subject, limit=10, timeout=4)
+    # ---------- 7) Latest Comments ----------
+    latest_comments = bundle.get("latest_comments") or []
+    if latest_comments:
+        ldf = pd.DataFrame(latest_comments)
+    else:
+        ldf = fetch_latest_comments_combined(subject, limit=10, timeout=4)
 
-    # Ensure columns
     for col in ["Source", "Comment", "CreatedUTC", "URL"]:
         if col not in ldf.columns:
             ldf[col] = None

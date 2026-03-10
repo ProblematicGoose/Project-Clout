@@ -94,6 +94,32 @@ def run_cached_query(cache_key, sql: str, params=None, ttl_seconds=300):
     _cache_set(cache_key, rows, ttl_seconds=ttl_seconds)
     return rows
 
+
+def safe_run_cached_query(cache_key, sql: str, params=None, ttl_seconds=300, default=None):
+    try:
+        return run_cached_query(cache_key, sql, params, ttl_seconds=ttl_seconds)
+    except Exception:
+        return [] if default is None else default
+
+
+def _get_table_columns(table_name: str, schema: str = "dbo"):
+    cache_key = ("table_columns", schema, table_name)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    rows = run_query(
+        """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+        ORDER BY ORDINAL_POSITION;
+        """,
+        {"schema": schema, "table_name": table_name},
+    )
+    cols = {r.get("COLUMN_NAME") for r in rows if r.get("COLUMN_NAME")}
+    _cache_set(cache_key, cols, ttl_seconds=1800)
+    return cols
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -178,23 +204,60 @@ def _get_subject_momentum(subject: str, start_d=None, end_d=None):
     date_filter = ""
     cache_key = ("subject_momentum", subject, str(start_d) if start_d else None, str(end_d) if end_d else None)
     if start_d and end_d:
-        date_filter = " AND ActivityDate BETWEEN :start_d AND :end_d"
+        date_filter = " AND a.ActivityDate BETWEEN :start_d AND :end_d"
         params.update({"start_d": start_d, "end_d": end_d})
+
+    try:
+        cols = _get_table_columns("SubjectDailySentiment", schema="dbo")
+    except Exception:
+        cols = set()
+
+    if "AvgSentiment" in cols:
+        sentiment_expr = "CAST(ISNULL(s.AvgSentiment, 0.0) AS FLOAT)"
+    elif "NormalizedSentimentScore" in cols:
+        sentiment_expr = "((CAST(ISNULL(s.NormalizedSentimentScore, 5000) AS FLOAT) - 5000.0) / 5000.0)"
+    elif "SentimentScore" in cols:
+        sentiment_expr = "CAST(ISNULL(s.SentimentScore, 0.0) AS FLOAT)"
+    else:
+        sentiment_expr = "0.0"
 
     sql = f"""
         SELECT
             CAST(a.ActivityDate AS DATE) AS ActivityDate,
             CAST(SUM(a.MentionCount) AS INT) AS MentionCount,
-            CAST(AVG(CAST(ISNULL(s.AvgSentiment, 0.0) AS FLOAT)) AS FLOAT) AS AvgSentiment
+            CAST(AVG({sentiment_expr}) AS FLOAT) AS AvgSentiment
         FROM dbo.SubjectDailyActivity a
         LEFT JOIN dbo.SubjectDailySentiment s
             ON a.Subject = s.Subject
-           AND a.ActivityDate = s.SentimentDate
+           AND CAST(a.ActivityDate AS DATE) = CAST(s.SentimentDate AS DATE)
         WHERE a.Subject = :subject {date_filter}
         GROUP BY CAST(a.ActivityDate AS DATE)
         ORDER BY ActivityDate ASC;
     """
-    return run_cached_query(cache_key, sql, params, ttl_seconds=300)
+
+    try:
+        return run_cached_query(cache_key, sql, params, ttl_seconds=300)
+    except Exception:
+        fallback_sql = f"""
+            SELECT
+                CAST(SentimentDate AS DATE) AS ActivityDate,
+                CAST(COUNT(*) AS INT) AS MentionCount,
+                CAST(AVG(CAST(SentimentScore AS FLOAT)) AS FLOAT) AS AvgSentiment
+            FROM (
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.RedditCommentsUSSenate
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.BlueskyCommentsUSSenate
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.YouTubeComments
+                UNION ALL
+                SELECT Subject, SentimentScore, CreatedUTC AS SentimentDate FROM dbo.CombinedTruthSocialComments
+            ) AS Combined
+            WHERE Subject = :subject
+            {"AND SentimentDate BETWEEN :start_d AND :end_d" if start_d and end_d else ""}
+            GROUP BY CAST(SentimentDate AS DATE)
+            ORDER BY ActivityDate ASC;
+        """
+        return safe_run_cached_query(("subject_momentum_fallback", subject, str(start_d) if start_d else None, str(end_d) if end_d else None), fallback_sql, params, ttl_seconds=300, default=[])
 
 
 def _get_subject_photos(subject: str):
@@ -376,7 +439,7 @@ def subject_bundle():
         ts_rows = _get_subject_timeseries(subject, start_d, end_d)
         mom_rows = _get_subject_momentum(subject, start_d, end_d)
 
-        strategy_rows = run_cached_query(
+        strategy_rows = safe_run_cached_query(
             ("weekly_strategy_latest", subject),
             """
                 SELECT TOP (1) StrategySummary, StrategyStatement, Rationale,
@@ -391,7 +454,7 @@ def subject_bundle():
         )
         strat = strategy_rows[0] if strategy_rows else None
 
-        asks = run_cached_query(
+        asks = safe_run_cached_query(
             ("constituent_asks_latest", subject),
             """
                 WITH Ranked AS (
@@ -412,8 +475,36 @@ def subject_bundle():
             ttl_seconds=300,
         )
 
-        photos = _get_subject_photos(subject)
-        comments = _get_latest_comments(subject, limit=10)
+        photos = safe_run_cached_query(("subject_photos_safe", subject), """
+                SELECT TOP 3 PhotoURL, OfficeTitle, State, Party, SourceWebsite
+                FROM dbo.ElectedOfficialPhotos
+                WHERE Subject = :subject
+                ORDER BY PhotoURL;
+            """, {"subject": subject}, ttl_seconds=1800, default=[])
+        comments = safe_run_cached_query(("latest_comments_safe", subject, 10), """
+                WITH C AS (
+                    SELECT 'Reddit' AS Source, CAST(Body AS NVARCHAR(MAX)) AS Comment, CreatedUTC, URL
+                    FROM dbo.RedditCommentsUSSenate WHERE Subject = :subject
+
+                    UNION ALL
+                    SELECT 'Bluesky', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, URL
+                    FROM dbo.BlueskyCommentsUSSenate WHERE Subject = :subject
+
+                    UNION ALL
+                    SELECT 'YouTube', CAST(yc.[Text] AS NVARCHAR(MAX)), yc.CreatedUTC, yv.URL
+                    FROM dbo.YouTubeComments yc
+                    LEFT JOIN dbo.YouTubeVideos yv ON yv.VideoID = yc.VideoID
+                    WHERE yc.Subject = :subject
+
+                    UNION ALL
+                    SELECT 'TruthSocial', CAST([Text] AS NVARCHAR(MAX)), CreatedUTC, [URL]
+                    FROM dbo.CombinedTruthSocialComments
+                    WHERE Subject = :subject
+                )
+                SELECT TOP 10 Source, Comment, CreatedUTC, URL
+                FROM C
+                ORDER BY CreatedUTC DESC;
+            """, {"subject": subject}, ttl_seconds=120, default=[])
 
         out = {
             "timeseries": [
