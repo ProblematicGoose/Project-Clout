@@ -1142,9 +1142,9 @@ def render_dashboard(subject):
 
     # ---------- 2) Shared datasets in parallel ----------
     scorecard = fetch_df(SCORECARD_URL, timeout=4)
-    traits_df = fetch_df_with_params(TRAITS_URL, {"subject": subject}, timeout=10)       # SubjectTraitSummary
+    traits_df = fetch_df_with_params(TRAITS_URL, {"subject": subject}, timeout=4)       # SubjectTraitSummary
     bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=4)  # NationalBillSentimentMentions (rolled up)
-    common_df = fetch_df(COMMON_GROUND_URL, timeout=10)   # CommonGroundIssues (latest per subject)
+    common_df = fetch_df(COMMON_GROUND_URL, timeout=4)   # CommonGroundIssues (latest per subject)
     issues    = fetch_json(TOP_ISSUES_URL, timeout=4) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
 
     # ---------- 3) Scorecard tile ----------
