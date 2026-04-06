@@ -678,12 +678,22 @@ def timeseries():
 @flask_app.route("/api/traits")
 def traits():
     try:
-        sql = """
-            SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
-            FROM SubjectTraitSummary
-            ORDER BY Subject, TraitType, CreatedUTC;
-        """
-        return jsonify(run_query(sql))
+        subject = request.args.get("subject")
+        if subject:
+            sql = """
+                SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
+                FROM dbo.SubjectTraitSummary
+                WHERE Subject = :subject
+                ORDER BY TraitType, CreatedUTC DESC, TraitRank ASC;
+            """
+            return jsonify(run_query(sql, {"subject": subject}))
+        else:
+            sql = """
+                SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
+                FROM dbo.SubjectTraitSummary
+                ORDER BY Subject, TraitType, CreatedUTC;
+            """
+            return jsonify(run_query(sql))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
