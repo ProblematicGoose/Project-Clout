@@ -1282,20 +1282,80 @@ def render_dashboard(subject):
 
 # ---------- 8) Behavioral Traits ----------
     pos_list, neg_list = [], []
-    if not traits_df.empty and "Subject" in traits_df.columns:
-        subj_norm = str(subject).strip().casefold()
-        tsub = traits_df[traits_df["Subject"].astype(str).str.strip().str.casefold().eq(subj_norm)].copy()
-        if not tsub.empty:
-            # parse CreatedUTC robustly
-            s = tsub.get("CreatedUTC", pd.Series([], dtype="object")).astype(str).str.replace("T"," ",regex=False).str.replace("Z","",regex=False)
-            s = s.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)
-            tsub["CreatedUTC_parsed"] = pd.to_datetime(s, errors="coerce")
-            def newest5(df, kind):
-                kk = df[df["TraitType"].astype(str).str.strip().str.casefold().eq(kind.casefold())].copy()
-                kk = kk[kk["CreatedUTC_parsed"].notna()].sort_values("CreatedUTC_parsed", ascending=False).head(5)
-                return kk["TraitDescription"].dropna().astype(str).tolist()
-            pos_list = newest5(tsub, "Positive")
-            neg_list = newest5(tsub, "Negative")
+
+    try:
+        print("[traits] raw rows:", len(traits_df), flush=True)
+
+        if not traits_df.empty:
+            # Normalize columns defensively
+            for col in ["Subject", "TraitType", "TraitDescription", "TraitRank", "CreatedUTC"]:
+                if col not in traits_df.columns:
+                    traits_df[col] = None
+
+            # Filter to the selected subject
+            subj_norm = str(subject).strip().casefold()
+            tsub = traits_df[
+                traits_df["Subject"].astype(str).str.strip().str.casefold().eq(subj_norm)
+            ].copy()
+
+            print("[traits] filtered subject rows:", len(tsub), flush=True)
+
+            if not tsub.empty:
+                print(
+                    "[traits] trait types:",
+                    tsub["TraitType"].dropna().astype(str).str.strip().unique().tolist(),
+                    flush=True
+                )
+
+                # Parse CreatedUTC safely, but do not require it to succeed
+                raw_created = tsub["CreatedUTC"].astype(str).str.replace("T", " ", regex=False).str.replace("Z", "", regex=False)
+                raw_created = raw_created.str.replace(r"(\.\d{6})\d+", r"\1", regex=True)
+                tsub["CreatedUTC_parsed"] = pd.to_datetime(raw_created, errors="coerce")
+
+                print(
+                    "[traits] parsed non-null:",
+                    int(tsub["CreatedUTC_parsed"].notna().sum()),
+                    flush=True
+                )
+
+                # Normalize rank
+                tsub["TraitRank_num"] = pd.to_numeric(tsub["TraitRank"], errors="coerce")
+
+                def newest5(df, kind):
+                    kk = df[
+                        df["TraitType"].astype(str).str.strip().str.casefold().eq(kind.casefold())
+                    ].copy()
+
+                    print(f"[traits] {kind} rows:", len(kk), flush=True)
+
+                    if kk.empty:
+                        return []
+
+                    # Prefer newest by parsed timestamp if available; otherwise fall back to rank
+                    if "CreatedUTC_parsed" in kk.columns and kk["CreatedUTC_parsed"].notna().any():
+                        kk = kk.sort_values(
+                            ["CreatedUTC_parsed", "TraitRank_num"],
+                            ascending=[False, True],
+                            na_position="last"
+                        )
+                    else:
+                        kk = kk.sort_values(
+                            ["TraitRank_num", "TraitDescription"],
+                            ascending=[True, True],
+                            na_position="last"
+                        )
+
+                    return kk["TraitDescription"].dropna().astype(str).head(5).tolist()
+
+                pos_list = newest5(tsub, "Positive")
+                neg_list = newest5(tsub, "Negative")
+
+        print("[traits] pos_list:", pos_list, flush=True)
+        print("[traits] neg_list:", neg_list, flush=True)
+
+    except Exception as e:
+        print("[traits block] error:", e, flush=True)
+        pos_list, neg_list = [], []
 
     dynamic_cards.append(
         html.Div(
@@ -1824,79 +1884,3 @@ def load_subject_options(_, saved_value, current_value):
 
 if __name__ == "__main__":
     app.run(debug=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
