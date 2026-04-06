@@ -1143,13 +1143,13 @@ def render_dashboard(subject):
     # ---------- 2) Shared datasets in parallel ----------
     scorecard = fetch_df(SCORECARD_URL, timeout=4)
     traits_sql = text("""
-    	SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
-    	FROM dbo.SubjectTraitSummary
-    	WHERE Subject = :subject
-    	ORDER BY TraitType, CreatedUTC DESC, TraitRank ASC
-	""")
-	with engine.begin() as conn:
-    		traits_df = pd.read_sql(traits_sql, conn, params={"subject": subject})
+        SELECT Subject, TraitType, TraitRank, TraitDescription, CreatedUTC
+        FROM dbo.SubjectTraitSummary
+        WHERE Subject = :subject
+        ORDER BY TraitType, CreatedUTC DESC, TraitRank ASC
+    """)
+    with engine.begin() as conn:
+        traits_df = pd.read_sql(traits_sql, conn, params={"subject": subject})
     bills_df  = fetch_df(BILL_SENTIMENT_URL, timeout=4)  # NationalBillSentimentMentions (rolled up)
     common_df = fetch_df(COMMON_GROUND_URL, timeout=4)   # CommonGroundIssues (latest per subject)
     issues    = fetch_json(TOP_ISSUES_URL, timeout=4) or {}  # WeeklyIdeologyTopics (Top Issues JSON)
@@ -1828,9 +1828,6 @@ def load_subject_options(_, saved_value, current_value):
 
 if __name__ == "__main__":
     app.run(debug=False)
-
-
-
 
 
 
